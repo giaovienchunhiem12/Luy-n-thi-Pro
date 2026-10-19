@@ -1,0 +1,6 @@
+{
+  "name": "Luyện Thi Pro",
+  "description": "Hệ thống quản lý lớp học và luyện thi trực tuyến.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

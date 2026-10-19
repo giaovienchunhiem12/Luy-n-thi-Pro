@@ -1,0 +1,78 @@
+{
+  "entities": {
+    "user": {
+      "title": "User",
+      "description": "User profile containing authentication information and role.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["teacher", "student"] },
+        "displayName": { "type": "string" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "class": {
+      "title": "Class",
+      "description": "A classroom containing students and managed by a teacher.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "grade": { "type": "string" },
+        "academicYear": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "studentIds": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "name", "grade", "academicYear", "teacherId"]
+    },
+    "question": {
+      "title": "Question",
+      "description": "A single question in a question bank.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "text": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "correctOptionIndex": { "type": "integer" }
+      },
+      "required": ["id", "text", "options", "correctOptionIndex"]
+    },
+    "exam": {
+      "title": "Exam",
+      "description": "An exam in the question bank.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "folderId": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "questionCountStr": { "type": "string" },
+        "totalQuestions": { "type": "integer" },
+        "durationMinutes": { "type": "integer" },
+        "isRecommended": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["draft", "published", "closed"] }
+      },
+      "required": ["id", "title", "teacherId"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": { "$ref": "user" },
+      "description": "User profiles."
+    },
+    "/classes/{classId}": {
+      "schema": { "$ref": "class" },
+      "description": "Classroom data."
+    },
+    "/questionBanks/{teacherId}/questions/{questionId}": {
+      "schema": { "$ref": "question" },
+      "description": "Questions organized by teacher."
+    },
+    "/exams/{examId}": {
+      "schema": { "$ref": "exam" },
+      "description": "Exam definitions."
+    }
+  }
+}

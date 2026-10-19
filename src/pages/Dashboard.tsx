@@ -1,0 +1,388 @@
+import { useState } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { Navigate, Link } from 'react-router-dom';
+import { auth } from '../firebase';
+import { signOut } from 'firebase/auth';
+import ClassManagement from '../components/ClassManagement';
+import ExamRepository from '../components/ExamRepository';
+import OnlineAssignment from '../components/OnlineAssignment';
+import {
+  GraduationCap,
+  BookOpen,
+  Send,
+  User,
+  LayoutDashboard,
+  LogOut,
+  Sparkles,
+  ChevronRight,
+  Bell,
+  Plus
+} from 'lucide-react';
+
+export default function Dashboard() {
+  const { user, loading } = useAuth();
+  // Khởi tạo mặc định vào 'classes' để người dùng tương tác ngay với tính năng Quản lý lớp
+  const [view, setView] = useState<'overview' | 'classes' | 'exams' | 'assign' | 'account' | 'notifications'>('overview');
+  const [newNotifTitle, setNewNotifTitle] = useState('');
+  const [newNotifMsg, setNewNotifMsg] = useState('');
+  const [teacherNotifications, setTeacherNotifications] = useState([
+    { title: 'Thông báo lịch kiểm tra định kỳ', message: 'Học sinh chú ý hoàn thành đúng hạn các bài thi trực tuyến được giao.' },
+    { title: 'Hướng dẫn ôn tập trắc nghiệm', message: 'Thầy cô đã cập nhật ngân hàng câu hỏi mới, các em nhớ vào ôn luyện.' }
+  ]);
+
+  const handleAddNotification = () => {
+    if (!newNotifTitle.trim() || !newNotifMsg.trim()) return;
+    setTeacherNotifications([{ title: newNotifTitle, message: newNotifMsg }, ...teacherNotifications]);
+    setNewNotifTitle('');
+    setNewNotifMsg('');
+  };
+
+  const handleDeleteNotification = (idx: number) => {
+    setTeacherNotifications(teacherNotifications.filter((_, i) => i !== idx));
+  };
+
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-slate-50">
+        <div className="text-center space-y-3">
+          <div className="w-8 h-8 border-3 border-teal-600 border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-sm text-slate-500 font-medium">Đang tải dữ liệu hệ thống...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) return <Navigate to="/" replace />;
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('Lỗi khi đăng xuất:', error);
+    }
+  };
+
+  const navItems = [
+    { id: 'overview', label: 'Tổng quan', icon: LayoutDashboard },
+    { id: 'notifications', label: 'Thông báo', icon: Bell },
+    { id: 'classes', label: 'Quản lý Lớp', icon: GraduationCap },
+    { id: 'exams', label: 'Kho Đề', icon: BookOpen },
+    { id: 'assign', label: 'Giao Bài Online', icon: Send },
+    { id: 'account', label: 'Tài khoản', icon: User },
+  ];
+
+  const renderContent = () => {
+    switch (view) {
+      case 'notifications':
+        return (
+          <div className="flex-1 bg-gray-50/60 p-8 overflow-y-auto">
+            <div className="max-w-4xl mx-auto space-y-6">
+              <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                    <Bell className="w-5 h-5 text-indigo-600" />
+                    <span>Quản lý Thông báo & Tin tức</span>
+                  </h2>
+                  <p className="text-xs text-gray-500 mt-1">Đăng thông báo, lịch thi và nhắc nhở gửi tới học sinh trên hệ thống.</p>
+                </div>
+              </div>
+
+              {/* Form tạo thông báo mới */}
+              <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+                <h3 className="font-bold text-sm text-gray-900">Tạo thông báo mới</h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Tiêu đề thông báo</label>
+                    <input
+                      type="text"
+                      placeholder="VD: Lịch ôn thi học kỳ I năm học 2026..."
+                      value={newNotifTitle}
+                      onChange={(e) => setNewNotifTitle(e.target.value)}
+                      className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Nội dung chi tiết</label>
+                    <textarea
+                      rows={3}
+                      placeholder="Nhập nội dung thông báo gửi cho học sinh..."
+                      value={newNotifMsg}
+                      onChange={(e) => setNewNotifMsg(e.target.value)}
+                      className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={handleAddNotification}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Đăng thông báo</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Danh sách thông báo */}
+              <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm space-y-4">
+                <h3 className="font-bold text-sm text-gray-900">Danh sách thông báo đã đăng ({teacherNotifications.length})</h3>
+                <div className="space-y-3">
+                  {teacherNotifications.map((n, i) => (
+                    <div key={i} className="p-4 bg-gray-50 rounded-xl border border-gray-200 flex items-start justify-between gap-4">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
+                          <h4 className="font-bold text-xs text-gray-900">{n.title}</h4>
+                        </div>
+                        <p className="text-xs text-gray-600 pl-4">{n.message}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteNotification(i)}
+                        className="text-rose-600 hover:text-rose-700 text-xs font-medium shrink-0 cursor-pointer"
+                      >
+                        Xóa
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+
+      case 'classes':
+        return <ClassManagement />;
+
+      case 'exams':
+        return <ExamRepository />;
+
+      case 'assign':
+        return <OnlineAssignment />;
+
+      case 'account':
+        return (
+          <div className="flex-1 bg-gray-50/60 p-8">
+            <div className="max-w-2xl mx-auto bg-white p-8 rounded-xl border border-gray-100 shadow-sm">
+              <h2 className="text-xl font-bold text-gray-900 mb-6">Thông tin Tài khoản Giáo viên</h2>
+              <div className="space-y-4">
+                <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg">
+                  <div className="w-14 h-14 rounded-full bg-teal-600 text-white flex items-center justify-center text-xl font-bold uppercase">
+                    {user.email?.charAt(0) || 'G'}
+                  </div>
+                  <div>
+                    <div className="font-semibold text-gray-900">{user.displayName || 'Giáo viên'}</div>
+                    <div className="text-sm text-gray-500">{user.email}</div>
+                    <div className="text-xs text-teal-600 font-medium mt-1">Vai trò: Giáo viên quản trị</div>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-gray-100 flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Trạng thái xác thực</span>
+                  <span className="text-xs font-semibold px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-200">
+                    Đã đăng nhập
+                  </span>
+                </div>
+
+                <div className="pt-4 flex justify-end">
+                  <button
+                    onClick={handleLogout}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-sm font-medium transition-colors cursor-pointer"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span>Đăng xuất</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+
+      case 'overview':
+      default:
+        return (
+          <div className="flex-1 bg-gray-50/60 p-6 md:p-8 overflow-y-auto space-y-6">
+            {/* Banner chào mừng */}
+            <div className="bg-gradient-to-r from-teal-700 via-teal-600 to-indigo-700 rounded-3xl p-6 md:p-8 text-white shadow-md relative overflow-hidden">
+              <div className="relative z-10 space-y-2">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-white/20 backdrop-blur-xs text-white">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Trang Tổng quan Giáo viên</span>
+                </span>
+                <h1 className="text-xl md:text-2xl font-black">
+                  Xin chào, {user.displayName || user.email || 'Giáo viên'}!
+                </h1>
+                <p className="text-xs md:text-sm text-teal-100 max-w-2xl leading-relaxed">
+                  Chào mừng thầy cô trở lại hệ thống Luyện Thi Pro. Dưới đây là các mục quản lý, thông báo, lớp học, kho đề, giao bài và tài khoản.
+                </p>
+                <div className="pt-3 flex flex-wrap gap-3">
+                  <button onClick={() => setView('classes')} className="px-4 py-2 bg-white text-teal-800 font-bold rounded-xl text-xs shadow-sm hover:bg-teal-50 transition-all cursor-pointer flex items-center gap-1.5">
+                    <GraduationCap className="w-4 h-4 text-teal-600" /> Quản lý Lớp
+                  </button>
+                  <button onClick={() => setView('exams')} className="px-4 py-2 bg-teal-900/60 text-white font-bold rounded-xl text-xs border border-teal-400/40 hover:bg-teal-900 transition-all cursor-pointer flex items-center gap-1.5">
+                    <BookOpen className="w-4 h-4 text-teal-300" /> Kho Đề Thi
+                  </button>
+                  <button onClick={() => setView('assign')} className="px-4 py-2 bg-teal-900/60 text-white font-bold rounded-xl text-xs border border-teal-400/40 hover:bg-teal-900 transition-all cursor-pointer flex items-center gap-1.5">
+                    <Send className="w-4 h-4 text-teal-300" /> Giao Bài Online
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Grid 5 thẻ mục: Thông báo, Quản lý lớp, Kho đề, Giao bài online, Tài khoản */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {/* 1. Thông báo */}
+              <div onClick={() => setView('notifications')} className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm hover:shadow-md transition-all cursor-pointer group space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold group-hover:scale-105 transition-transform">
+                    <Bell className="w-5 h-5" />
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-gray-400 group-hover:translate-x-1 transition-transform" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900 text-sm">Thông báo & Tin tức</h3>
+                  <p className="text-xs text-gray-500 mt-1">Đăng tải thông báo, lịch thi tới học sinh ({teacherNotifications.length} thông báo)</p>
+                </div>
+              </div>
+
+              {/* 2. Quản lý lớp */}
+              <div onClick={() => setView('classes')} className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm hover:shadow-md transition-all cursor-pointer group space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-11 h-11 rounded-2xl bg-teal-50 text-teal-600 flex items-center justify-center font-bold group-hover:scale-105 transition-transform">
+                    <GraduationCap className="w-5 h-5" />
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-gray-400 group-hover:translate-x-1 transition-transform" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900 text-sm">Quản lý Lớp học</h3>
+                  <p className="text-xs text-gray-500 mt-1">Quản lý danh sách lớp, thêm học sinh, nhập Excel.</p>
+                </div>
+              </div>
+
+              {/* 3. Kho đề */}
+              <div onClick={() => setView('exams')} className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm hover:shadow-md transition-all cursor-pointer group space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-11 h-11 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold group-hover:scale-105 transition-transform">
+                    <BookOpen className="w-5 h-5" />
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-gray-400 group-hover:translate-x-1 transition-transform" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900 text-sm">Kho Đề Thi</h3>
+                  <p className="text-xs text-gray-500 mt-1">Tạo đề trắc nghiệm, phân loại thư mục, ngân hàng câu hỏi.</p>
+                </div>
+              </div>
+
+              {/* 4. Giao bài online */}
+              <div onClick={() => setView('assign')} className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm hover:shadow-md transition-all cursor-pointer group space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-11 h-11 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold group-hover:scale-105 transition-transform">
+                    <Send className="w-5 h-5" />
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-gray-400 group-hover:translate-x-1 transition-transform" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900 text-sm">Giao Bài Online</h3>
+                  <p className="text-xs text-gray-500 mt-1">Giao bài kiểm tra trực tuyến, theo dõi tiến độ nộp bài.</p>
+                </div>
+              </div>
+
+              {/* 5. Tài khoản */}
+              <div onClick={() => setView('account')} className="bg-white p-6 rounded-3xl border border-gray-200 shadow-sm hover:shadow-md transition-all cursor-pointer group space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="w-11 h-11 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold group-hover:scale-105 transition-transform">
+                    <User className="w-5 h-5" />
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-gray-400 group-hover:translate-x-1 transition-transform" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-gray-900 text-sm">Tài khoản & Cài đặt</h3>
+                  <p className="text-xs text-gray-500 mt-1">Quản lý thông tin tài khoản giáo viên, đăng xuất hệ thống.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen bg-gray-50 font-sans">
+      {/* Sidebar điều hướng chuyên nghiệp */}
+      <aside className="w-64 bg-white border-r border-gray-200 flex flex-col justify-between shrink-0 shadow-sm">
+        <div>
+          {/* Logo Brand */}
+          <div className="p-5 border-b border-gray-100 flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-teal-600 text-white flex items-center justify-center font-bold text-base shadow-sm">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className="font-bold text-gray-900 text-base leading-tight">Luyện Thi Pro</h2>
+              <p className="text-xs text-gray-400">Hệ thống giáo viên</p>
+            </div>
+          </div>
+
+          {/* Navigation Links */}
+          <nav className="p-3 space-y-1">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = view === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setView(item.id as any)}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                    isActive
+                      ? 'bg-teal-50 text-teal-800 font-semibold shadow-xs'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100/80'
+                  }`}
+                >
+                  <Icon
+                    className={`w-4 h-4 ${isActive ? 'text-teal-600' : 'text-gray-400'}`}
+                  />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+            <Link
+                to="/student-dashboard"
+                className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium text-indigo-700 hover:bg-indigo-50 transition-all cursor-pointer mt-2 border border-indigo-100"
+            >
+                <GraduationCap className="w-4 h-4" />
+                <span>Xem giao diện Học sinh</span>
+            </Link>
+          </nav>
+        </div>
+
+        {/* User Card & Logout Button */}
+        <div className="p-4 border-t border-gray-100 bg-gray-50/50">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-9 h-9 rounded-full bg-teal-700 text-white flex items-center justify-center font-bold text-sm shrink-0">
+              {user.email?.charAt(0).toUpperCase() || 'U'}
+            </div>
+            <div className="overflow-hidden">
+              <div className="text-xs font-semibold text-gray-800 truncate">
+                {user.displayName || 'Giáo viên'}
+              </div>
+              <div className="text-xs text-gray-500 truncate" title={user.email || ''}>
+                {user.email}
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-medium text-rose-600 hover:bg-rose-50 border border-rose-100 rounded-lg transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Đăng xuất</span>
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      {renderContent()}
+    </div>
+  );
+}
