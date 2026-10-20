@@ -5,6 +5,7 @@ import { db, auth } from '../firebase';
 import {
   collection,
   addDoc,
+  getDocs,
   query,
   where,
   onSnapshot,
@@ -40,6 +41,12 @@ import {
   Layers
 } from 'lucide-react';
 import { MathText } from './MathText';
+import { MathPreview } from './MathPreview';
+import { sanitizeMathContent, convertOmmlToLatex } from '../utils/mathSanitizer';
+import { parseWordFile } from '../utils/wordParser';
+import { compressExamQuestions, estimateObjectSizeBytes } from '../utils/imageCompressor';
+// @ts-ignore
+import JSZip from 'jszip';
 import { DEFAULT_SAMPLE_QUESTIONS, DEFAULT_SECTION_POINTS } from '../data/sampleQuestions';
 
 export interface ExamItem {
@@ -51,6 +58,7 @@ export interface ExamItem {
   questionCountStr: string;
   durationMinutes: number;
   isRecommended: boolean;
+  hasSubcollectionQuestions?: boolean;
   subject?: string;
   grade?: string;
   assignedClassNames?: string[];
@@ -64,6 +72,16 @@ export interface ExamItem {
     questionType?: string;
     solution?: string;
   }[];
+  sectionPoints?: {
+    p1: number;
+    p2: {
+      opt1: number;
+      opt2: number;
+      opt3: number;
+      opt4: number;
+    };
+    p3: number;
+  };
 }
 
 export interface FolderItem {
@@ -72,9 +90,9 @@ export interface FolderItem {
   teacherId: string;
 }
 
-export const isSection1 = (sec?: string) => Boolean(sec && /Phần\s*I\b/i.test(sec) && !/Phần\s*II/i.test(sec) && !/Phần\s*III/i.test(sec));
-export const isSection2 = (sec?: string) => Boolean(sec && /Phần\s*II\b/i.test(sec) && !/Phần\s*III/i.test(sec));
-export const isSection3 = (sec?: string) => Boolean(sec && /Phần\s*III\b/i.test(sec));
+export const isSection1 = (sec?: string) => Boolean(sec && /Phần\s*(?:I(?![IVX])|1\b|thứ\s*nhất)/i.test(sec) && !/Phần\s*(?:II|2\b)/i.test(sec) && !/Phần\s*(?:III|3\b)/i.test(sec));
+export const isSection2 = (sec?: string) => Boolean(sec && /Phần\s*(?:II(?![IVX])|2\b|thứ\s*hai)/i.test(sec) && !/Phần\s*(?:III|3\b)/i.test(sec));
+export const isSection3 = (sec?: string) => Boolean(sec && /Phần\s*(?:III(?![IVX])|3\b|thứ\s*ba)/i.test(sec));
 
 export const parsePart2Answers = (ansStr: string): { [key: string]: 'Đúng' | 'Sai' } => {
   const res: { [key: string]: 'Đúng' | 'Sai' } = { a: 'Đúng', b: 'Sai', c: 'Đúng', d: 'Sai' };
@@ -201,6 +219,26 @@ export default function ExamRepository() {
     };
   }, []);
 
+  useEffect(() => {
+    if (
+      showDetailModal &&
+      selectedExamForAction &&
+      selectedExamForAction.hasSubcollectionQuestions &&
+      (!selectedExamForAction.questions || selectedExamForAction.questions.length === 0)
+    ) {
+      getDocs(collection(db, 'exams', selectedExamForAction.id, 'questionChunks'))
+        .then((snap) => {
+          const sortedDocs = snap.docs.sort((a, b) => (a.data().chunkIndex || 0) - (b.data().chunkIndex || 0));
+          let allQ: any[] = [];
+          sortedDocs.forEach((d) => {
+            allQ = allQ.concat(d.data().questions || []);
+          });
+          setSelectedExamForAction((prev) => (prev ? { ...prev, questions: allQ } : null));
+        })
+        .catch((err) => console.error('Lỗi tải câu hỏi từ subcollection:', err));
+    }
+  }, [showDetailModal, selectedExamForAction?.id]);
+
   const seedInitialExams = async (uid: string) => {
     const sampleExams = [
       { title: '1201 - ôn chương 1-2', createdAtStr: '25/12/2026', questionCountStr: '18-2-2-0', durationMinutes: 45, isRecommended: true },
@@ -235,11 +273,11 @@ export default function ExamRepository() {
   };
 
   const extractTextFromHtmlPreservingUnderline = (html: string): string => {
-    let processed = html
-      .replace(/<math[^>]*>([\s\S]*?)<\/math>/gi, (match, inner) => {
-        const cleanMath = inner.replace(/<[^>]+>/g, '').trim();
-        return `$${cleanMath}$`;
-      })
+    // 1. Chuẩn hóa MathType, MathML, OMML và ký hiệu toán học trước
+    let processed = sanitizeMathContent(html);
+
+    // 2. Bảo toàn gạch chân đáp án và định dạng đoạn văn
+    processed = processed
       .replace(/<span[^>]*style=["'][^"']*text-decoration:\s*underline[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi, '<u>$1</u>')
       .replace(/<ins[^>]*>([\s\S]*?)<\/ins>/gi, '<u>$1</u>')
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
@@ -248,13 +286,13 @@ export default function ExamRepository() {
       .replace(/<\/(?:p|div|tr|h[1-6]|li)>/gi, '\n\n')
       .replace(/<(?:p|div|tr|h[1-6]|li)[^>]*>/gi, '\n')
       .replace(/<td[^>]*>/gi, ' ')
-      .replace(/<(?!(\/?u\b|\/?math\b))[^>]+>/gi, ' ')
+      .replace(/<(?!(\/?u\b|\/?img\b))[^>]+>/gi, ' ')
       .replace(/&nbsp;/gi, ' ')
       .replace(/&lt;/gi, '<')
       .replace(/&gt;/gi, '>')
       .replace(/&amp;/gi, '&');
 
-    return processed;
+    return sanitizeMathContent(processed);
   };
 
   const extractRawTextFromFile = async (file: File): Promise<string> => {
@@ -265,34 +303,29 @@ export default function ExamRepository() {
     const isZip = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B;
 
     if (isZip) {
+      // 1.1 Sử dụng parseWordFile (Mammoth + cấu hình bắt ảnh công thức sang base64)
       try {
-        // @ts-ignore
-        const rawResult = await mammoth.extractRawText({ arrayBuffer });
-        const val = (rawResult && rawResult.value) || '';
-        if (val.trim()) {
-          return val;
-        }
-      } catch (e) {
-        console.warn('Không thể trích xuất raw text từ file docx:', e);
-      }
-
-      try {
-        // @ts-ignore
-        const result = await mammoth.convertToHtml({ arrayBuffer }, {
-          styleMap: [
-            "u => u",
-            "strike => s"
-          ]
-        });
-        const htmlVal = (result && result.value) || '';
-        if (htmlVal.trim()) {
+        const htmlVal = await parseWordFile(arrayBuffer);
+        if (htmlVal && htmlVal.trim()) {
           const preservedText = extractTextFromHtmlPreservingUnderline(htmlVal);
           if (preservedText.trim()) {
             return preservedText;
           }
         }
       } catch (zipErr: any) {
-        console.warn('Không thể chuyển đổi html từ file docx qua Mammoth:', zipErr?.message);
+        console.warn('Không thể chuyển đổi html từ file docx qua parseWordFile:', zipErr?.message);
+      }
+
+      // 1.2 Thử trích xuất thô qua Mammoth nếu convertToHtml không thành công
+      try {
+        // @ts-ignore
+        const rawResult = await mammoth.extractRawText({ arrayBuffer });
+        const val = (rawResult && rawResult.value) || '';
+        if (val.trim()) {
+          return sanitizeMathContent(val);
+        }
+      } catch (e) {
+        console.warn('Không thể trích xuất raw text từ file docx:', e);
       }
     }
 
@@ -372,15 +405,16 @@ export default function ExamRepository() {
 
       // Chuẩn hóa ký tự số La Mã Unicode thành chữ cái ASCII thông thường
       text = text
-        .replace(/[ⅠI]/g, 'I')
-        .replace(/[Ⅱ]/g, 'II')
-        .replace(/[Ⅲ]/g, 'III');
+        .replace(/Ⅰ/g, 'I')
+        .replace(/Ⅱ/g, 'II')
+        .replace(/Ⅲ/g, 'III');
 
       // 1. Phân chia ranh giới 3 phần dựa vào các tiêu đề lớn:
       // Tìm vị trí xuất hiện của PHẦN I, PHẦN II, PHẦN III
-      const p1Regex = /(?:^|\n)\s*(?:PH[ẦA]N\s*(?:I|1\b|THỨ\s*NHẤT)|(?:MỤC\s*)?I[\.\:\-\s]+(?:CÂU\s*HỎI\s*)?TRẮC\s*NGHIỆM)/i;
-      const p2Regex = /(?:^|\n)\s*(?:PH[ẦA]N\s*(?:II|2\b|THỨ\s*HAI)|(?:MỤC\s*)?II[\.\:\-\s]+(?:CÂU\s*(?:TRẮC\s*NGHIỆM\s*)?)?ĐÚNG\s*SAI)/i;
-      const p3Regex = /(?:^|\n)\s*(?:PH[ẦA]N\s*(?:III|3\b|THỨ\s*BA)|(?:MỤC\s*)?III[\.\:\-\s]+(?:CÂU\s*(?:TRẮC\s*NGHIỆM\s*)?)?TRẢ\s*LỜI\s*NGẮN)/i;
+      // Dùng (?![IVX]) để đảm bảo "I" không khớp nhầm "II" hay "III", và "II" không khớp nhầm "III"
+      const p1Regex = /(?:^|\n|\r|\s{2,})\s*(?:PH[ẦA]N\s*(?:I(?![IVX])|1\b|THỨ\s*NHẤT)|(?:MỤC\s*)?I(?![IVX])[\.\:\-\s]+(?:CÂU\s*HỎI\s*)?TRẮC\s*NGHIỆM)/i;
+      const p2Regex = /(?:^|\n|\r|\s{2,})\s*(?:PH[ẦA]N\s*(?:II(?![IVX])|2\b|THỨ\s*HAI)|(?:MỤC\s*)?II(?![IVX])[\.\:\-\s]+(?:CÂU\s*(?:TRẮC\s*NGHIỆM\s*)?)?ĐÚNG\s*SAI)/i;
+      const p3Regex = /(?:^|\n|\r|\s{2,})\s*(?:PH[ẦA]N\s*(?:III(?![IVX])|3\b|THỨ\s*BA)|(?:MỤC\s*)?III(?![IVX])[\.\:\-\s]+(?:CÂU\s*(?:TRẮC\s*NGHIỆM\s*)?)?TRẢ\s*LỜI\s*NGẮN)/i;
 
       const m1 = text.match(p1Regex);
       const m2 = text.match(p2Regex);
@@ -405,6 +439,12 @@ export default function ExamRepository() {
         rawP1 = text.substring(0, idx2);
         rawP2 = text.substring(idx2, idx3);
         rawP3 = text.substring(idx3);
+      } else if (idx2 !== -1) {
+        rawP1 = text.substring(0, idx2);
+        rawP2 = text.substring(idx2);
+      } else if (idx3 !== -1) {
+        rawP1 = text.substring(0, idx3);
+        rawP3 = text.substring(idx3);
       } else {
         rawP1 = text;
       }
@@ -412,12 +452,20 @@ export default function ExamRepository() {
       // 2. Hàm tách các khối câu hỏi độc lập trong một phần (quét các mốc "Câu 1.", "Câu 2.", ...)
       const extractQuestionBlocks = (secStr: string) => {
         if (!secStr.trim()) return [];
-        const lineRegex = /(?:^|\n)\s*(?:Câu|Bài|CAU|BÀI)\s*(\d+)[\.\:\-]\s*/gi;
+        const lineRegex = /(?:^|\n|\r)\s*(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s*(\d+)\s*\]?[\.\:\-]?\s*)/gi;
         let matches = Array.from(secStr.matchAll(lineRegex));
 
         if (matches.length === 0) {
-          const inlineRegex = /(?:^|\s)(?:Câu|Bài|CAU|BÀI)\s*(\d+)[\.\:\-]\s*/gi;
+          const inlineRegex = /(?:^|\s)(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s*(\d+)\s*\]?[\.\:\-]?\s*)/gi;
           matches = Array.from(secStr.matchAll(inlineRegex));
+        }
+
+        if (matches.length === 0) {
+          const numRegex = /(?:^|\n|\r)\s*(\d+)[\.\)]\s+/g;
+          const numMatches = Array.from(secStr.matchAll(numRegex));
+          if (numMatches.length >= 2) {
+            matches = numMatches;
+          }
         }
 
         const blocks: { num: number; text: string }[] = [];
@@ -450,11 +498,11 @@ export default function ExamRepository() {
         const letters = ['A', 'B', 'C', 'D'];
         let underlineAnswer = '';
 
-        const rawMcMatches = Array.from(content.matchAll(/(?:^|\n|\s+)(?:<u>\s*)?([A-D])[\.\)](?:<\/u>)?\s*(.*?)(?=(?:\s+(?:<u>\s*)?[A-D][\.\)]|\n\s*(?:<u>\s*)?[A-D][\.\)]|$))/g));
+        const rawMcMatches = Array.from(content.matchAll(/(?:^|\n|\r|\s+)(?:<u>\s*)?([A-D])[\.\:\)](?:<\/u>)?\s*(.*?)(?=(?:\s+(?:<u>\s*)?[A-D][\.\:\)]|\n\s*(?:<u>\s*)?[A-D][\.\:\)]|$))/g));
 
         let options: string[] = [];
         if (rawMcMatches.length >= 2) {
-          const firstOpt = content.search(/(?:^|\n|\s+)(?:<u>\s*)?[A-D][\.\)]/);
+          const firstOpt = content.search(/(?:^|\n|\r|\s+)(?:<u>\s*)?[A-D][\.\:\)]/);
           if (firstOpt !== -1) content = content.substring(0, firstOpt).trim();
 
           options = rawMcMatches.slice(0, 4).map((m, idx) => {
@@ -466,7 +514,7 @@ export default function ExamRepository() {
             if (/<u>/i.test(fullMatchedStr) || /<u>/i.test(optBody)) {
               underlineAnswer = letter;
             }
-            const cleanBody = optBody.replace(/<\/?u>/gi, '').replace(/^[A-D][\.\)]\s*/i, '').trim();
+            const cleanBody = optBody.replace(/<\/?u>/gi, '').replace(/^[A-D][\.\:\)]\s*/i, '').trim();
             return `${letter}. ${cleanBody}`;
           });
         }
@@ -477,7 +525,7 @@ export default function ExamRepository() {
         }
 
         if (!underlineAnswer) {
-          const underLetterM = content.match(/<u>\s*([A-D])[\.\)]?\s*<\/u>/i);
+          const underLetterM = content.match(/<u>\s*([A-D])[\.\:\)]?\s*<\/u>/i);
           if (underLetterM) {
             underlineAnswer = underLetterM[1].toUpperCase();
           }
@@ -524,29 +572,110 @@ export default function ExamRepository() {
         }
 
         const subLetters = ['a', 'b', 'c', 'd'];
-        const rawTfMatches = Array.from(content.matchAll(/(?:^|\n|\s+)(?:<u>\s*)?([a-dA-D])[\.\)](?:<\/u>)?\s*(.*?)(?=(?:\s+(?:<u>\s*)?[a-dA-D][\.\)]|\n\s*(?:<u>\s*)?[a-dA-D][\.\)]|$))/gi));
-
-        let options: string[] = [];
         const detectedTfAnswers: { [key: string]: 'Đúng' | 'Sai' } = {};
 
-        if (rawTfMatches.length >= 2) {
-          const firstOpt = content.search(/(?:^|\n|\s+)(?:<u>\s*)?[a-dA-D][\.\)]/i);
-          if (firstOpt !== -1) content = content.substring(0, firstOpt).trim();
+        // 1. Check for trailing answer summary line in content
+        const summaryRegex = /(?:^|\n)\s*(?:Đáp án|Đáp số|Kết quả)?\s*[:=]?\s*a[\.\)]\s*(đúng|sai|đ|s|true|false)\b[\s\-\,\;]+b[\.\)]\s*(đúng|sai|đ|s|true|false)\b[\s\-\,\;]+c[\.\)]\s*(đúng|sai|đ|s|true|false)\b[\s\-\,\;]+d[\.\)]\s*(đúng|sai|đ|s|true|false)\b/i;
+        const summaryMatch = content.match(summaryRegex);
+        if (summaryMatch && summaryMatch.index !== undefined) {
+          const partA = summaryMatch[1].toLowerCase();
+          const partB = summaryMatch[2].toLowerCase();
+          const partC = summaryMatch[3].toLowerCase();
+          const partD = summaryMatch[4].toLowerCase();
 
-          options = rawTfMatches.slice(0, 4).map((m, idx) => {
-            const letter = subLetters[idx] || m[1].toLowerCase();
-            const fullMatchedStr = m[0];
-            const optBody = m[2].trim();
+          detectedTfAnswers['a'] = (partA.startsWith('đ') || partA === 'true') ? 'Đúng' : 'Sai';
+          detectedTfAnswers['b'] = (partB.startsWith('đ') || partB === 'true') ? 'Đúng' : 'Sai';
+          detectedTfAnswers['c'] = (partC.startsWith('đ') || partC === 'true') ? 'Đúng' : 'Sai';
+          detectedTfAnswers['d'] = (partD.startsWith('đ') || partD === 'true') ? 'Đúng' : 'Sai';
 
-            if (/<u>\s*(?:đúng|dung|true|đ)\s*<\/u>/i.test(fullMatchedStr) || /<u>[^<]*\b(?:đúng|dung|true)\b[^<]*<\/u>/i.test(fullMatchedStr)) {
-              detectedTfAnswers[letter] = 'Đúng';
-            } else if (/<u>\s*(?:sai|false|s)\s*<\/u>/i.test(fullMatchedStr) || /<u>[^<]*\b(?:sai|false)\b[^<]*<\/u>/i.test(fullMatchedStr)) {
-              detectedTfAnswers[letter] = 'Sai';
+          content = content.substring(0, summaryMatch.index).trim();
+        }
+
+        if (Object.keys(detectedTfAnswers).length === 0 && solution) {
+          const solSummaryMatch = solution.match(summaryRegex);
+          if (solSummaryMatch) {
+            const partA = solSummaryMatch[1].toLowerCase();
+            const partB = solSummaryMatch[2].toLowerCase();
+            const partC = solSummaryMatch[3].toLowerCase();
+            const partD = solSummaryMatch[4].toLowerCase();
+
+            detectedTfAnswers['a'] = (partA.startsWith('đ') || partA === 'true') ? 'Đúng' : 'Sai';
+            detectedTfAnswers['b'] = (partB.startsWith('đ') || partB === 'true') ? 'Đúng' : 'Sai';
+            detectedTfAnswers['c'] = (partC.startsWith('đ') || partC === 'true') ? 'Đúng' : 'Sai';
+            detectedTfAnswers['d'] = (partD.startsWith('đ') || partD === 'true') ? 'Đúng' : 'Sai';
+          }
+        }
+
+        // 2. Extract options a, b, c, d robustly using letter-specific matchers
+        let options: string[] = [];
+        let firstOptIndex = content.length;
+        const optionBodies: { [key: string]: { body: string; index: number } } = {};
+
+        for (let i = 0; i < subLetters.length; i++) {
+          const l = subLetters[i];
+          const nextLetter = i < subLetters.length - 1 ? subLetters[i + 1] : null;
+          
+          let regex: RegExp;
+          if (nextLetter) {
+            regex = new RegExp(`(?:^|\\s|<[^>]+>)${l}[\\.\\:\\)]\\s*([\\s\\S]*?)(?=(?:\\s|<[^>]+>)${nextLetter}[\\.\\:\\)])`, 'i');
+          } else {
+            regex = new RegExp(`(?:^|\\s|<[^>]+>)${l}[\\.\\:\\)]\\s*([\\s\\S]*?)$`, 'i');
+          }
+
+          const match = content.match(regex);
+          
+          if (match && match.index !== undefined) {
+            if (match.index < firstOptIndex) {
+              firstOptIndex = match.index;
+            }
+            optionBodies[l] = {
+              body: match[1].trim(),
+              index: match.index
+            };
+          }
+        }
+
+        if (Object.keys(optionBodies).length >= 2) {
+          const questionStem = content.substring(0, firstOptIndex).trim();
+          if (questionStem) {
+            content = questionStem;
+          }
+
+          options = subLetters.map((letter, idx) => {
+            const optObj = optionBodies[letter];
+            if (!optObj) {
+              return `${letter}) Ý thứ ${idx + 1}`;
             }
 
-            const cleanBody = optBody.replace(/<\/?u>/gi, '').replace(/^[a-dA-D][\.\)]\s*/i, '').trim();
-            return `${letter}) ${cleanBody}`;
+            const rawBody = optObj.body;
+
+            if (/<u>\s*(?:đúng|dung|true|đ)\s*<\/u>/i.test(rawBody) || /\b(?:đúng|dung|true)\b/i.test(rawBody)) {
+              if (/<u>\s*(?:đúng|dung|true|đ)\s*<\/u>/i.test(rawBody) || /\(?(?:đúng|dung|true)\)?$/i.test(rawBody)) {
+                detectedTfAnswers[letter] = 'Đúng';
+              }
+            }
+            if (/<u>\s*(?:sai|false|s)\s*<\/u>/i.test(rawBody) || /\b(?:sai|false)\b/i.test(rawBody)) {
+              if (/<u>\s*(?:sai|false|s)\s*<\/u>/i.test(rawBody) || /\(?(?:sai|false)\)?$/i.test(rawBody)) {
+                detectedTfAnswers[letter] = 'Sai';
+              }
+            }
+
+            const cleanBody = rawBody
+              .replace(/<\/?u>/gi, '')
+              .replace(/\b(?:Đúng|Sai|True|False)\b/gi, '')
+              .replace(/[\(\[\{]\s*[\}\]\)]/g, '')
+              .trim();
+
+            return `${letter}) ${cleanBody || 'Ý thứ ' + (idx + 1)}`;
           });
+        } else {
+          // Fallback splitting if specific markers weren't matched
+          options = [
+            'a) Ý thứ 1',
+            'b) Ý thứ 2',
+            'c) Ý thứ 3',
+            'd) Ý thứ 4'
+          ];
         }
 
         while (options.length < 4) {
@@ -555,7 +684,7 @@ export default function ExamRepository() {
         }
 
         let correctAnswer = 'a) Đúng - b) Sai - c) Đúng - d) Sai';
-        if (Object.keys(detectedTfAnswers).length >= 2) {
+        if (Object.keys(detectedTfAnswers).length >= 1) {
           correctAnswer = subLetters.map(l => `${l}) ${detectedTfAnswers[l] || 'Đúng'}`).join(' - ');
         } else {
           const ansM = content.match(/(?:^|\n)\s*(?:Đáp án|Đáp số|Kết quả)\s*[:=]\s*([^\n]+)/i);
@@ -563,7 +692,6 @@ export default function ExamRepository() {
             if (ansM[1].toLowerCase().includes('đúng') || ansM[1].toLowerCase().includes('sai')) {
               correctAnswer = ansM[1].trim();
             }
-            content = content.replace(ansM[0], '').trim();
           } else if (solution && (solution.toLowerCase().includes('đúng') && solution.toLowerCase().includes('sai'))) {
             const solAnsM = solution.match(/(?:^|\n)\s*(?:Đáp án|Đáp số|Kết quả)\s*[:=]\s*([^\n]+)/i);
             if (solAnsM && (solAnsM[1].toLowerCase().includes('đúng') || solAnsM[1].toLowerCase().includes('sai'))) {
@@ -631,76 +759,52 @@ export default function ExamRepository() {
       // 6. Bóc tách câu hỏi chuẩn xác cho từng phần
       const finalQuestions: any[] = [];
 
-      if (rawP2.trim() || rawP3.trim()) {
-        const p1Blocks = extractQuestionBlocks(rawP1);
-        const p2Blocks = extractQuestionBlocks(rawP2);
-        const p3Blocks = extractQuestionBlocks(rawP3);
+      let p1Blocks = rawP1.trim() ? extractQuestionBlocks(rawP1) : [];
+      let p2Blocks = rawP2.trim() ? extractQuestionBlocks(rawP2) : [];
+      let p3Blocks = rawP3.trim() ? extractQuestionBlocks(rawP3) : [];
 
-        p1Blocks.forEach((b, idx) => {
-          finalQuestions.push({
-            ...parseP1Question(b.text),
-            sectionGroup: 'PHẦN I: Câu hỏi trắc nghiệm nhiều phương án lựa chọn',
-            section: `Phần I - Câu ${idx + 1}`
-          });
-        });
-
-        p2Blocks.forEach((b, idx) => {
-          finalQuestions.push({
-            ...parseP2Question(b.text),
-            sectionGroup: 'PHẦN II: Câu trắc nghiệm đúng sai',
-            section: `Phần II - Câu ${idx + 1}`
-          });
-        });
-
-        p3Blocks.forEach((b, idx) => {
-          finalQuestions.push({
-            ...parseP3Question(b.text),
-            sectionGroup: 'PHẦN III: Câu trắc nghiệm trả lời ngắn',
-            section: `Phần III - Câu ${idx + 1}`
-          });
-        });
-      } else {
-        const allBlocks = extractQuestionBlocks(rawP1);
-        const p1Items: any[] = [];
-        const p2Items: any[] = [];
-        const p3Items: any[] = [];
-
+      // Nếu chia phần bằng tiêu đề nhưng một trong các phần bị thiếu câu hỏi hoặc không tìm thấy
+      if (p1Blocks.length === 0 && p2Blocks.length === 0 && p3Blocks.length === 0) {
+        // Tách câu hỏi từ toàn bộ văn bản và tự động phân loại thông minh theo cấu trúc
+        const allBlocks = extractQuestionBlocks(text);
         allBlocks.forEach((b) => {
-          const text = b.text;
-          const hasTF = Array.from(text.matchAll(/(?:^|\n|\s+)[a-d][\.\)]\s*/gi)).length >= 2;
-          const hasMC = Array.from(text.matchAll(/(?:^|\n|\s+)[A-D][\.\)]\s*/g)).length >= 2;
+          const bText = b.text;
+          const hasTF = Array.from(bText.matchAll(/(?:^|\n|\r|\s+)[a-d][\.\:\)]\s*/gi)).length >= 2;
+          const hasMC = Array.from(bText.matchAll(/(?:^|\n|\r|\s+)[A-D][\.\:\)]\s*/g)).length >= 2;
 
           if (hasTF) {
-            p2Items.push(parseP2Question(text));
+            p2Blocks.push(b);
           } else if (hasMC) {
-            p1Items.push(parseP1Question(text));
+            p1Blocks.push(b);
           } else {
-            p3Items.push(parseP3Question(text));
+            p3Blocks.push(b);
           }
         });
-
-        p1Items.forEach((q, idx) => {
-          finalQuestions.push({
-            ...q,
-            sectionGroup: 'PHẦN I: Câu hỏi trắc nghiệm nhiều phương án lựa chọn',
-            section: `Phần I - Câu ${idx + 1}`
-          });
-        });
-        p2Items.forEach((q, idx) => {
-          finalQuestions.push({
-            ...q,
-            sectionGroup: 'PHẦN II: Câu trắc nghiệm đúng sai',
-            section: `Phần II - Câu ${idx + 1}`
-          });
-        });
-        p3Items.forEach((q, idx) => {
-          finalQuestions.push({
-            ...q,
-            sectionGroup: 'PHẦN III: Câu trắc nghiệm trả lời ngắn',
-            section: `Phần III - Câu ${idx + 1}`
-          });
-        });
       }
+
+      p1Blocks.forEach((b, idx) => {
+        finalQuestions.push({
+          ...parseP1Question(b.text),
+          sectionGroup: 'PHẦN I: Câu hỏi trắc nghiệm nhiều phương án lựa chọn',
+          section: `Phần I - Câu ${idx + 1}`
+        });
+      });
+
+      p2Blocks.forEach((b, idx) => {
+        finalQuestions.push({
+          ...parseP2Question(b.text),
+          sectionGroup: 'PHẦN II: Câu trắc nghiệm đúng sai',
+          section: `Phần II - Câu ${idx + 1}`
+        });
+      });
+
+      p3Blocks.forEach((b, idx) => {
+        finalQuestions.push({
+          ...parseP3Question(b.text),
+          sectionGroup: 'PHẦN III: Câu trắc nghiệm trả lời ngắn',
+          section: `Phần III - Câu ${idx + 1}`
+        });
+      });
 
       if (finalQuestions.length === 0) {
         setNotification({
@@ -959,10 +1063,13 @@ export default function ExamRepository() {
     const countStr = `${p1Count}-${p2Count}-${p3Count}-0`;
 
     try {
-      await addDoc(collection(db, 'exams'), {
+      // 1. Tự động nén tất cả hình ảnh trong câu hỏi để đảm bảo không vượt quá 1MB của Firestore
+      const optimizedQuestions = await compressExamQuestions(parsedQuestions);
+
+      const payload = {
         title: settingTitle.trim(),
         teacherId: user.uid,
-        folderId: 'default',
+        folderId: selectedFolderId !== 'all' ? selectedFolderId : null,
         createdAtStr: formattedDate,
         questionCountStr: countStr,
         durationMinutes: 45,
@@ -972,9 +1079,33 @@ export default function ExamRepository() {
         examType: settingExamType,
         description: settingDescription,
         sectionPoints: sectionPoints,
-        questions: parsedQuestions,
+        questions: optimizedQuestions,
         createdAt: serverTimestamp()
-      });
+      };
+
+      const estimatedBytes = estimateObjectSizeBytes(payload);
+
+      // 2. Nếu đề thi có dung lượng lớn hơn 850KB, tự động lưu câu hỏi vào subcollection
+      if (estimatedBytes > 850_000) {
+        const docRef = await addDoc(collection(db, 'exams'), {
+          ...payload,
+          questions: [], // Doc chính chỉ chứa metadata để không vượt quá giới hạn 1MB
+          hasSubcollectionQuestions: true
+        });
+
+        // Chia câu hỏi thành các chunk nhỏ lưu vào subcollection
+        const chunkSize = 10;
+        for (let i = 0; i < optimizedQuestions.length; i += chunkSize) {
+          const chunk = optimizedQuestions.slice(i, i + chunkSize);
+          await addDoc(collection(db, 'exams', docRef.id, 'questionChunks'), {
+            chunkIndex: Math.floor(i / chunkSize),
+            questions: chunk,
+            createdAt: serverTimestamp()
+          });
+        }
+      } else {
+        await addDoc(collection(db, 'exams'), payload);
+      }
 
       setShowSettingModal(false);
       setSelectedFile(null);
@@ -1046,6 +1177,17 @@ export default function ExamRepository() {
     }
   };
 
+  const deleteDefaultExams = async () => {
+    const user = auth.currentUser;
+    if (!user) return;
+    const q = query(collection(db, 'exams'), where('teacherId', '==', user.uid), where('isRecommended', '==', true));
+    const snap = await getDocs(q);
+    for (const d of snap.docs) {
+      await deleteDoc(d.ref);
+    }
+    setNotification({ type: 'success', message: 'Đã xóa hết các đề mặc định.' });
+  };
+
   const handleAssignExamToClass = async () => {
     if (!selectedExamForAction || !selectedClassIdToAssign) return;
     const targetClass = classesList.find((c) => c.id === selectedClassIdToAssign);
@@ -1096,6 +1238,12 @@ export default function ExamRepository() {
 
       <div className="flex items-center justify-between pb-6 border-b border-gray-100 mb-6">
         <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Quản lý đề kiểm tra</h1>
+        <button
+          onClick={deleteDefaultExams}
+          className="px-3 py-1.5 bg-rose-100 text-rose-700 rounded-lg text-xs font-medium hover:bg-rose-200 cursor-pointer"
+        >
+          Xóa đề mặc định
+        </button>
         <div className="w-9 h-9 rounded-full bg-teal-50 border border-teal-200 flex items-center justify-center font-bold text-xs text-teal-700">
           EDU
         </div>
@@ -1746,9 +1894,13 @@ export default function ExamRepository() {
                                   <div className="flex items-center gap-2">
                                     <span className="bg-teal-100 text-teal-800 px-2 py-0.5 rounded">Câu {idx + 1}</span>
                                     <span className="text-gray-500 font-normal">({sectionTitle})</span>
-                                     <span className="text-[11px] px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 font-medium border border-amber-200">
-                                       {sectionType === 'P1' ? `${sectionPoints.p1}đ` : sectionType === 'P2' ? '1.0đ' : `${sectionPoints.p3}đ`}
-                                     </span>
+                                    <span className="text-[11px] px-2.5 py-0.5 rounded-md bg-amber-50 text-amber-900 font-bold border border-amber-300 shadow-2xs">
+                                      {sectionType === 'P1'
+                                        ? `${sectionPoints.p1} điểm`
+                                        : sectionType === 'P2'
+                                        ? `1.0 điểm (${sectionPoints.p2.opt1}đ - ${sectionPoints.p2.opt2}đ - ${sectionPoints.p2.opt3}đ - ${sectionPoints.p2.opt4}đ)`
+                                        : `${sectionPoints.p3} điểm`}
+                                    </span>
                                   </div>
                                   <div className="text-xs text-gray-700 font-normal flex items-center gap-1.5">
                                     <span>Đáp án đúng:</span>
@@ -1784,7 +1936,7 @@ export default function ExamRepository() {
                                               : 'bg-white border-gray-200 text-gray-700'
                                           }`}
                                         >
-                                          <span className={`font-bold ${isChosenP1 ? 'underline decoration-2 text-teal-800' : ''}`}>
+                                          <span className={`font-bold ${isChosenP1 ? 'text-teal-800' : ''}`}>
                                             {isP1 ? `${currentLetter}. ` : `${currentLetter}) `}
                                           </span>
                                           <span className="flex-1">
@@ -1826,15 +1978,22 @@ export default function ExamRepository() {
                             >
                               {/* Top Bar of Card */}
                               <div className="flex items-center justify-between pb-2 border-b border-gray-100">
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-2 flex-wrap">
                                   <span className="px-2.5 py-1 bg-teal-700 text-white font-bold text-xs rounded-lg shadow-2xs">
                                     Câu {idx + 1}
                                   </span>
                                   <span className="text-[11px] font-semibold text-gray-500">
                                     {sectionTitle}
                                   </span>
+                                  <span className="text-[11px] px-2.5 py-0.5 rounded-md bg-amber-50 text-amber-900 font-bold border border-amber-300 shadow-2xs">
+                                    {sectionType === 'P1'
+                                      ? `${sectionPoints.p1} điểm`
+                                      : sectionType === 'P2'
+                                      ? `1.0 điểm (${sectionPoints.p2.opt1}đ - ${sectionPoints.p2.opt2}đ - ${sectionPoints.p2.opt3}đ - ${sectionPoints.p2.opt4}đ)`
+                                      : `${sectionPoints.p3} điểm`}
+                                  </span>
                                   <span className="text-[11px] px-2 py-0.5 rounded-md bg-teal-50 text-teal-800 font-medium border border-teal-200">
-                                    Đáp án: <b className="underline decoration-2 font-bold">{q.correctAnswer}</b>
+                                    Đáp án đúng: <b className="font-bold text-teal-700">{q.correctAnswer}</b>
                                   </span>
                                 </div>
                                 <button
@@ -1860,12 +2019,7 @@ export default function ExamRepository() {
                                   placeholder="Nhập nội dung câu hỏi..."
                                   className="w-full min-h-[100px] px-3 py-2.5 text-xs font-medium text-gray-800 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
                                 />
-                                {q.questionText && q.questionText.includes('$') && (
-                                  <div className="mt-1 p-2 bg-gray-50/80 border border-dashed border-gray-300 rounded-md text-xs text-gray-700">
-                                    <span className="text-[10px] text-gray-400 font-semibold block mb-0.5">Xem trước công thức:</span>
-                                    <MathText text={q.questionText} />
-                                  </div>
-                                )}
+                                <MathPreview content={q.questionText} label="Xem trước câu hỏi (MathType / KaTeX):" />
                               </div>
 
                               {/* Options & Answers Section */}
@@ -2012,12 +2166,7 @@ export default function ExamRepository() {
                                   placeholder="Nhập lời giải chi tiết, các bước tính toán để học sinh tham khảo sau khi nộp bài..."
                                   className="w-full min-h-[100px] px-3 py-2.5 text-xs font-medium text-gray-800 bg-teal-50/40 border border-teal-200 rounded-lg focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
                                 />
-                                {q.solution && q.solution.includes('$') && (
-                                  <div className="mt-1 p-2 bg-teal-50/60 border border-dashed border-teal-200 rounded-md text-xs text-teal-900">
-                                    <span className="text-[10px] text-teal-700 font-semibold block mb-0.5">Hiển thị lời giải:</span>
-                                    <MathText text={q.solution} />
-                                  </div>
-                                )}
+                                <MathPreview content={q.solution || ''} label="Xem trước lời giải (MathType / KaTeX):" />
                               </div>
                             </div>
                           );
@@ -2202,7 +2351,16 @@ export default function ExamRepository() {
                           return (
                             <div key={idx} className="p-4 bg-gray-50/90 border border-gray-200 rounded-xl space-y-2.5">
                               <div className="flex items-center justify-between text-xs font-bold text-teal-800">
-                                <span className="bg-teal-100 text-teal-800 px-2 py-0.5 rounded">Câu {idx + 1}</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="bg-teal-100 text-teal-800 px-2 py-0.5 rounded">Câu {idx + 1}</span>
+                                  <span className="text-[11px] px-2.5 py-0.5 rounded-md bg-amber-50 text-amber-900 font-bold border border-amber-300 shadow-2xs">
+                                    {isP1
+                                      ? `${selectedExamForAction?.sectionPoints?.p1 ?? 0.25} điểm`
+                                      : isP2
+                                      ? `1.0 điểm (${selectedExamForAction?.sectionPoints?.p2?.opt1 ?? 0.1}đ - ${selectedExamForAction?.sectionPoints?.p2?.opt2 ?? 0.25}đ - ${selectedExamForAction?.sectionPoints?.p2?.opt3 ?? 0.5}đ - ${selectedExamForAction?.sectionPoints?.p2?.opt4 ?? 1.0}đ)`
+                                      : `${selectedExamForAction?.sectionPoints?.p3 ?? 0.25} điểm`}
+                                  </span>
+                                </div>
                                 <span className="text-gray-600 font-normal">
                                   Đáp án đúng: <b className="text-teal-700">{q.correctAnswer}</b>
                                 </span>
@@ -2226,7 +2384,7 @@ export default function ExamRepository() {
                                             : 'bg-white border-gray-200 text-gray-700'
                                         }`}
                                       >
-                                        <span className={`font-bold ${isChosenP1 ? 'underline decoration-2 text-teal-800' : ''}`}>
+                                        <span className={`font-bold ${isChosenP1 ? 'text-teal-800' : ''}`}>
                                           {isP1 ? `${currentLetter}. ` : `${currentLetter}) `}
                                         </span>
                                         <span className="flex-1">
@@ -2265,7 +2423,16 @@ export default function ExamRepository() {
                   selectedExamForAction.questions.map((q, idx) => (
                     <div key={idx} className="p-4 bg-gray-50/90 border border-gray-200 rounded-xl space-y-2.5">
                       <div className="flex items-center justify-between text-xs font-bold text-teal-800">
-                        <span className="bg-teal-100 text-teal-800 px-2 py-0.5 rounded">{q.section || `Câu ${idx + 1}`}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="bg-teal-100 text-teal-800 px-2 py-0.5 rounded">{q.section || `Câu ${idx + 1}`}</span>
+                          <span className="text-[11px] px-2.5 py-0.5 rounded-md bg-amber-50 text-amber-900 font-bold border border-amber-300 shadow-2xs">
+                            {isSection1(q.section)
+                              ? `${selectedExamForAction?.sectionPoints?.p1 ?? 0.25} điểm`
+                              : isSection2(q.section)
+                              ? `1.0 điểm (${selectedExamForAction?.sectionPoints?.p2?.opt1 ?? 0.1}đ - ${selectedExamForAction?.sectionPoints?.p2?.opt2 ?? 0.25}đ - ${selectedExamForAction?.sectionPoints?.p2?.opt3 ?? 0.5}đ - ${selectedExamForAction?.sectionPoints?.p2?.opt4 ?? 1.0}đ)`
+                              : `${selectedExamForAction?.sectionPoints?.p3 ?? 0.25} điểm`}
+                          </span>
+                        </div>
                         <span className="text-gray-600 font-normal">
                           Đáp án đúng: <b className="text-teal-700">{q.correctAnswer}</b>
                         </span>
@@ -2287,7 +2454,7 @@ export default function ExamRepository() {
                                     : 'bg-white border-gray-200 text-gray-700'
                                 }`}
                               >
-                                <span className={`font-bold ${isChosen ? 'underline decoration-2 text-teal-800' : ''}`}>
+                                <span className={`font-bold ${isChosen ? 'text-teal-800' : ''}`}>
                                   {letters[oIdx] ? `${letters[oIdx]}. ` : ''}
                                 </span>
                                 <span className="flex-1">

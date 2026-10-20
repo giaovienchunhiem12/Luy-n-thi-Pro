@@ -162,6 +162,25 @@ export default function ExamTest() {
           }
         }
 
+        // Tải câu hỏi từ subcollection nếu đề thi có dung lượng lớn được chia chunk
+        if (examInfo && (examInfo.hasSubcollectionQuestions || (!examInfo.questions && examInfo.id))) {
+          try {
+            const chunksSnap = await getDocs(collection(db, 'exams', examInfo.id, 'questionChunks'));
+            if (!chunksSnap.empty) {
+              const sortedDocs = chunksSnap.docs.sort((a, b) => (a.data().chunkIndex || 0) - (b.data().chunkIndex || 0));
+              let loadedQuestions: any[] = [];
+              sortedDocs.forEach((d) => {
+                loadedQuestions = loadedQuestions.concat(d.data().questions || []);
+              });
+              if (loadedQuestions.length > 0) {
+                examInfo.questions = loadedQuestions;
+              }
+            }
+          } catch (subErr) {
+            console.warn('Lỗi đọc questionChunks từ subcollection:', subErr);
+          }
+        }
+
         // If exam exists but has no questions, or session has no exam, provide fallback
         if (!examInfo || !examInfo.questions || examInfo.questions.length === 0) {
           const fallbackQuestions = DEFAULT_SAMPLE_QUESTIONS;
