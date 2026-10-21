@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 // @ts-ignore
 import mammoth from 'mammoth';
 import { db, auth } from '../firebase';
+import { useAuth } from '../context/AuthContext';
 import {
   collection,
   addDoc,
@@ -109,6 +110,7 @@ export const parsePart2Answers = (ansStr: string): { [key: string]: 'Đúng' | '
 };
 
 export default function ExamRepository() {
+  const { user: authUser } = useAuth();
   const [exams, setExams] = useState<ExamItem[]>([]);
   const [folders, setFolders] = useState<FolderItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -177,24 +179,24 @@ export default function ExamRepository() {
   }, []);
 
   useEffect(() => {
-    const user = auth.currentUser;
+    const user = auth.currentUser || authUser;
     if (!user) return;
-    const q = query(collection(db, 'classes'), where('teacherId', '==', user.uid));
+    const q = query(collection(db, 'classes'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setClassesList(snapshot.docs.map((d) => ({ id: d.id, name: d.data().name })));
     });
     return () => unsubscribe();
-  }, []);
+  }, [authUser]);
 
   useEffect(() => {
-    const user = auth.currentUser;
+    const user = auth.currentUser || authUser;
     if (!user) {
       setLoading(false);
       return;
     }
 
-    const qExams = query(collection(db, 'exams'), where('teacherId', '==', user.uid));
-    const qFolders = query(collection(db, 'folders'), where('teacherId', '==', user.uid));
+    const qExams = query(collection(db, 'exams'));
+    const qFolders = query(collection(db, 'folders'));
 
     const unsubFolders = onSnapshot(qFolders, (snap) => {
       setFolders(snap.docs.map((d) => ({ id: d.id, ...d.data() } as FolderItem)));
@@ -202,7 +204,7 @@ export default function ExamRepository() {
 
     const unsubExams = onSnapshot(qExams, async (snap) => {
       if (snap.empty) {
-        await seedInitialExams(user.uid);
+        await seedInitialExams(user.uid || 'teacher_giasudienvan');
       } else {
         const list: ExamItem[] = snap.docs.map((d) => ({
           id: d.id,
@@ -217,7 +219,8 @@ export default function ExamRepository() {
       unsubFolders();
       unsubExams();
     };
-  }, []);
+  }, [authUser]);
+
 
   useEffect(() => {
     if (
@@ -1260,7 +1263,7 @@ export default function ExamRepository() {
   };
 
   const handleSaveFinalExam = async () => {
-    const user = auth.currentUser;
+    const user = auth.currentUser || authUser;
     if (!user || !settingTitle.trim()) return;
 
     setIsSavingExam(true);
@@ -1278,7 +1281,8 @@ export default function ExamRepository() {
 
       const payload = {
         title: settingTitle.trim(),
-        teacherId: user.uid,
+        teacherId: user.uid || 'teacher_giasudienvan',
+        teacherEmail: user.email || 'giasudienvan@gmail.com',
         folderId: selectedFolderId !== 'all' ? selectedFolderId : null,
         createdAtStr: formattedDate,
         questionCountStr: countStr,
@@ -1330,14 +1334,15 @@ export default function ExamRepository() {
 
   const handleCreateFolder = async (e: React.FormEvent) => {
     e.preventDefault();
-    const user = auth.currentUser;
+    const user = auth.currentUser || authUser;
     if (!user || !newFolderName.trim()) return;
 
     setIsCreatingFolder(true);
     try {
       await addDoc(collection(db, 'folders'), {
         name: newFolderName.trim(),
-        teacherId: user.uid,
+        teacherId: user.uid || 'teacher_giasudienvan',
+        teacherEmail: user.email || 'giasudienvan@gmail.com',
         createdAt: serverTimestamp()
       });
       setNewFolderName('');

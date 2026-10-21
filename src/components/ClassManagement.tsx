@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db, auth } from '../firebase';
+import { useAuth } from '../context/AuthContext';
 import {
   collection,
   addDoc,
@@ -48,6 +49,7 @@ interface ClassItem {
 }
 
 export default function ClassManagement() {
+  const { user: authUser } = useAuth();
   // Chế độ xem: 'list' (danh sách lớp) | 'create' (tạo mới lớp theo mẫu) | 'detail' (chi tiết lớp & học sinh)
   const [mode, setMode] = useState<'list' | 'create' | 'detail'>('list');
   const [classes, setClasses] = useState<ClassItem[]>([]);
@@ -89,16 +91,13 @@ export default function ClassManagement() {
 
   // Lắng nghe dữ liệu lớp học theo giáo viên đăng nhập
   useEffect(() => {
-    const user = auth.currentUser;
+    const user = auth.currentUser || authUser;
     if (!user) {
       setLoading(false);
       return;
     }
 
-    const q = query(
-      collection(db, 'classes'),
-      where('teacherId', '==', user.uid)
-    );
+    const q = query(collection(db, 'classes'));
 
     const unsubscribe = onSnapshot(
       q,
@@ -110,6 +109,7 @@ export default function ClassManagement() {
         list.sort((a, b) => a.name.localeCompare(b.name));
         setClasses(list);
         setLoading(false);
+
 
         // Cập nhật selectedClass realtime nếu đang xem chi tiết
         if (selectedClass) {
@@ -210,7 +210,7 @@ export default function ClassManagement() {
   // Lưu lớp học mới vào Firestore
   const handleCreateClass = async (e: React.FormEvent) => {
     e.preventDefault();
-    const user = auth.currentUser;
+    const user = auth.currentUser || authUser;
     if (!user) {
       setNotification({ type: 'error', message: 'Bạn cần đăng nhập để tạo lớp.' });
       return;
@@ -232,7 +232,8 @@ export default function ClassManagement() {
         name: name.trim(),
         grade,
         academicYear,
-        teacherId: user.uid,
+        teacherId: user.uid || 'teacher_giasudienvan',
+        teacherEmail: user.email || 'giasudienvan@gmail.com',
         students: students,
         createdAt: serverTimestamp()
       });

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db, auth } from '../firebase';
+import { useAuth } from '../context/AuthContext';
 import {
   collection,
   addDoc,
@@ -66,6 +67,7 @@ export interface ExamSession {
 }
 
 export default function OnlineAssignment() {
+  const { user: authUser } = useAuth();
   const [sessions, setSessions] = useState<ExamSession[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
 
@@ -109,15 +111,15 @@ export default function OnlineAssignment() {
 
   // Lấy danh sách lớp và đề thi của giáo viên để phục vụ tạo phiên
   useEffect(() => {
-    const user = auth.currentUser;
+    const user = auth.currentUser || authUser;
     if (!user) return;
 
-    const qClasses = query(collection(db, 'classes'), where('teacherId', '==', user.uid));
+    const qClasses = query(collection(db, 'classes'));
     const unsubClasses = onSnapshot(qClasses, (snap) => {
       setClassesList(snap.docs.map((d) => ({ id: d.id, name: d.data().name })));
     });
 
-    const qExams = query(collection(db, 'exams'), where('teacherId', '==', user.uid));
+    const qExams = query(collection(db, 'exams'));
     const unsubExams = onSnapshot(qExams, (snap) => {
       setExamsList(snap.docs.map((d) => ({ id: d.id, title: d.data().title })));
     });
@@ -126,20 +128,17 @@ export default function OnlineAssignment() {
       unsubClasses();
       unsubExams();
     };
-  }, []);
+  }, [authUser]);
 
   // Lắng nghe dữ liệu các phiên giao đề từ Firestore
   useEffect(() => {
-    const user = auth.currentUser;
+    const user = auth.currentUser || authUser;
     if (!user) {
       setLoading(false);
       return;
     }
 
-    const q = query(
-      collection(db, 'examSessions'),
-      where('teacherId', '==', user.uid)
-    );
+    const q = query(collection(db, 'examSessions'));
 
     const unsubscribe = onSnapshot(
       q,
@@ -157,6 +156,7 @@ export default function OnlineAssignment() {
         setLoading(false);
       }
     );
+
 
     return () => unsubscribe();
   }, []);
@@ -265,7 +265,7 @@ export default function OnlineAssignment() {
   // Tạo mới phiên giao đề
   const handleCreateSession = async (e: React.FormEvent) => {
     e.preventDefault();
-    const user = auth.currentUser;
+    const user = auth.currentUser || authUser;
     if (!user || !selectedExamId) return;
 
     const examObj = examsList.find((e) => e.id === selectedExamId);
@@ -295,7 +295,8 @@ export default function OnlineAssignment() {
         startDateStr: formatDateTime(startDate),
         endDateStr: formatDateTime(endDate),
         status: 'Đang diễn ra',
-        teacherId: user.uid,
+        teacherId: user.uid || 'teacher_giasudienvan',
+        teacherEmail: user.email || 'giasudienvan@gmail.com',
         createdAt: serverTimestamp()
       });
 

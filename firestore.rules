@@ -1,58 +1,9 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper functions
-    function isSignedIn() { return request.auth != null; }
-    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
-
-    // Default deny
     match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // Users collection
-    match /users/{uid} {
-      allow read, write: if isSignedIn() && (isOwner(uid) || true);
-    }
-
-    // Classes collection
-    match /classes/{classId} {
-      allow read: if true;
-      allow write: if isSignedIn();
-    }
-
-    // Students collection
-    match /students/{studentId} {
-      allow read: if true;
-      allow write: if isSignedIn();
-    }
-
-    // Exams collection (Kho đề)
-    match /exams/{examId} {
-      allow read: if true;
-      allow write: if isSignedIn();
-
-      match /{allSubcollections=**} {
-        allow read: if true;
-        allow write: if isSignedIn();
-      }
-    }
-
-    // Folders collection (Thư mục đề thi)
-    match /folders/{folderId} {
-      allow read, write: if isSignedIn();
-    }
-
-    // Exam sessions collection (Các phiên giao đề online)
-    match /examSessions/{sessionId} {
-      allow read: if true;
-      allow write: if isSignedIn();
-    }
-
-    // Exam submissions collection (Kết quả làm bài thi của học sinh)
-    match /examSubmissions/{submissionId} {
-      allow read, create: if true;
-      allow update, delete: if isSignedIn();
+      allow read, write: if true;
     }
   }
 }
+

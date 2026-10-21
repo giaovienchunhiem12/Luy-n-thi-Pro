@@ -20,7 +20,7 @@ import {
 } from 'lucide-react';
 
 export default function Dashboard() {
-  const { user, loading } = useAuth();
+  const { user, loading, logout } = useAuth();
   // Khởi tạo mặc định vào 'classes' để người dùng tương tác ngay với tính năng Quản lý lớp
   const [view, setView] = useState<'overview' | 'classes' | 'exams' | 'assign' | 'account' | 'notifications'>('overview');
   const [newNotifTitle, setNewNotifTitle] = useState('');
@@ -56,11 +56,12 @@ export default function Dashboard() {
 
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      await logout();
     } catch (error) {
       console.error('Lỗi khi đăng xuất:', error);
     }
   };
+
 
   const navItems = [
     { id: 'overview', label: 'Tổng quan', icon: LayoutDashboard },
