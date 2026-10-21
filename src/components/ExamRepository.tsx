@@ -43,7 +43,7 @@ import {
 import { MathText } from './MathText';
 import { MathPreview } from './MathPreview';
 import { sanitizeMathContent, convertOmmlToLatex } from '../utils/mathSanitizer';
-import { parseWordFile } from '../utils/wordParser';
+import { parseWordFile, parsePdfFileToText } from '../utils/wordParser';
 import { compressExamQuestions, estimateObjectSizeBytes } from '../utils/imageCompressor';
 // @ts-ignore
 import JSZip from 'jszip';
@@ -90,9 +90,9 @@ export interface FolderItem {
   teacherId: string;
 }
 
-export const isSection1 = (sec?: string) => Boolean(sec && /Phần\s*(?:I(?![IVX])|1\b|thứ\s*nhất)/i.test(sec) && !/Phần\s*(?:II|2\b)/i.test(sec) && !/Phần\s*(?:III|3\b)/i.test(sec));
-export const isSection2 = (sec?: string) => Boolean(sec && /Phần\s*(?:II(?![IVX])|2\b|thứ\s*hai)/i.test(sec) && !/Phần\s*(?:III|3\b)/i.test(sec));
-export const isSection3 = (sec?: string) => Boolean(sec && /Phần\s*(?:III(?![IVX])|3\b|thứ\s*ba)/i.test(sec));
+export const isSection1 = (sec?: string) => Boolean(sec && (/(?:Phần|Part)\s*(?:I(?![IVX\w])|1\b|thứ\s*nhất)/i.test(sec) || /^1\b|^I(?![IVX\w])/i.test(sec)) && !/(?:Phần|Part)\s*(?:II|2\b)/i.test(sec) && !/(?:Phần|Part)\s*(?:III|3\b)/i.test(sec));
+export const isSection2 = (sec?: string) => Boolean(sec && (/(?:Phần|Part)\s*(?:II(?![IVX\w])|2\b|thứ\s*hai)/i.test(sec) || /^2\b|^II(?![IVX\w])/i.test(sec)) && !/(?:Phần|Part)\s*(?:III|3\b)/i.test(sec));
+export const isSection3 = (sec?: string) => Boolean(sec && (/(?:Phần|Part)\s*(?:III(?![IVX\w])|3\b|thứ\s*ba)/i.test(sec) || /^3\b|^III(?![IVX\w])/i.test(sec)));
 
 export const parsePart2Answers = (ansStr: string): { [key: string]: 'Đúng' | 'Sai' } => {
   const res: { [key: string]: 'Đúng' | 'Sai' } = { a: 'Đúng', b: 'Sai', c: 'Đúng', d: 'Sai' };
@@ -344,10 +344,15 @@ export default function ExamRepository() {
     // 3. Nếu là file PDF (%PDF-)
     const isPdf = bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
     if (isPdf) {
-      const rawString = new TextDecoder('latin1').decode(bytes);
-      const textMatches = Array.from(rawString.matchAll(/\(([^()]{2,})\)\s*Tj/g)).map(m => m[1]);
-      if (textMatches.length > 5) {
-        return textMatches.join(' ');
+      try {
+        const text = await parsePdfFileToText(arrayBuffer);
+        if (text && text.trim().length > 5) {
+          return text;
+        } else {
+          console.warn('PDF extracted text is too short:', text);
+        }
+      } catch (e) {
+        console.warn('Không thể trích xuất text từ file PDF:', e);
       }
       throw new Error('FILE_PDF_UNREADABLE');
     }
@@ -405,24 +410,52 @@ export default function ExamRepository() {
 
       // Chuẩn hóa ký tự số La Mã Unicode thành chữ cái ASCII thông thường
       text = text
-        .replace(/Ⅰ/g, 'I')
-        .replace(/Ⅱ/g, 'II')
-        .replace(/Ⅲ/g, 'III');
+        .replace(/[Ⅰⅰ]/g, 'I')
+        .replace(/[Ⅱⅱ]/g, 'II')
+        .replace(/[Ⅲⅲ]/g, 'III');
 
       // 1. Phân chia ranh giới 3 phần dựa vào các tiêu đề lớn:
-      // Tìm vị trí xuất hiện của PHẦN I, PHẦN II, PHẦN III
-      // Dùng (?![IVX]) để đảm bảo "I" không khớp nhầm "II" hay "III", và "II" không khớp nhầm "III"
-      const p1Regex = /(?:^|\n|\r|\s{2,})\s*(?:PH[ẦA]N\s*(?:I(?![IVX])|1\b|THỨ\s*NHẤT)|(?:MỤC\s*)?I(?![IVX])[\.\:\-\s]+(?:CÂU\s*HỎI\s*)?TRẮC\s*NGHIỆM)/i;
-      const p2Regex = /(?:^|\n|\r|\s{2,})\s*(?:PH[ẦA]N\s*(?:II(?![IVX])|2\b|THỨ\s*HAI)|(?:MỤC\s*)?II(?![IVX])[\.\:\-\s]+(?:CÂU\s*(?:TRẮC\s*NGHIỆM\s*)?)?ĐÚNG\s*SAI)/i;
-      const p3Regex = /(?:^|\n|\r|\s{2,})\s*(?:PH[ẦA]N\s*(?:III(?![IVX])|3\b|THỨ\s*BA)|(?:MỤC\s*)?III(?![IVX])[\.\:\-\s]+(?:CÂU\s*(?:TRẮC\s*NGHIỆM\s*)?)?TRẢ\s*LỜI\s*NGẮN)/i;
+      // Tự động nhận diện linh hoạt: 'Phần 1', 'Phần I', 'Phần 2', 'Phần II', 'Phần 3', 'Phần III'
+      // Không phân biệt chữ hoa/thường, có hoặc không có dấu chấm, hai chấm, gạch ngang, ngoặc đơn
+      const p1Regex = /(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:I(?![IVX\w])|1\b|THỨ\s*NHẤT)[\.\:\-\s\)]*/gi;
+      const p2Regex = /(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:II(?![IVX\w])|2\b|THỨ\s*HAI)[\.\:\-\s\)]*/gi;
+      const p3Regex = /(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:III(?![IVX\w])|3\b|THỨ\s*BA)[\.\:\-\s\)]*/gi;
 
-      const m1 = text.match(p1Regex);
-      const m2 = text.match(p2Regex);
-      const m3 = text.match(p3Regex);
+      // Các tiêu đề bổ sung trong trường hợp file không ghi chữ "Phần" mà chỉ ghi loại câu hỏi
+      const p1AltRegex = /(?:^|[\r\n\s]|<[^>]+>)(?:CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*NHIỀU\s*LỰA\s*CHỌN|TRẮC\s*NGHIỆM\s*NHIỀU\s*PHƯƠNG\s*ÁN|TRẮC\s*NGHIỆM\s*4\s*LỰA\s*CHỌN)/gi;
+      const p2AltRegex = /(?:^|[\r\n\s]|<[^>]+>)(?:CÂU\s*TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI|CÂU\s*HỎI\s*ĐÚNG\s*SAI|TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI)/gi;
+      const p3AltRegex = /(?:^|[\r\n\s]|<[^>]+>)(?:CÂU\s*TRẮC\s*NGHIỆM\s*TRẢ\s*LỜI\s*NGẮN|CÂU\s*HỎI\s*TRẢ\s*LỜI\s*NGẮN|TRẢ\s*LỜI\s*NGẮN)/gi;
 
-      const idx1 = m1 ? m1.index! : -1;
-      const idx2 = m2 ? m2.index! : -1;
-      const idx3 = m3 ? m3.index! : -1;
+      const findBestSectionMatch = (regexList: RegExp[], fullText: string): number => {
+        for (const rgx of regexList) {
+          const all = Array.from(fullText.matchAll(rgx));
+          if (all.length === 0) continue;
+          if (all.length === 1) {
+            const m = all[0];
+            const leading = m[0].match(/^[\r\n\s]+/);
+            return (m.index || 0) + (leading ? leading[0].length : 0);
+          }
+          // Khi có nhiều kết quả (ví dụ xuất hiện ở phần giới thiệu đầu trang "Đề thi gồm 3 phần: Phần 1, Phần 2, Phần 3")
+          // Loại bỏ các vị trí giới thiệu tóm tắt bằng cách tìm vị trí thực sự có nội dung câu hỏi phía sau
+          for (const m of all) {
+            const idx = m.index || 0;
+            const snippet = fullText.substring(Math.max(0, idx - 100), idx + 200);
+            const isSummaryHeader = /(?:gồm|cấu trúc|thời gian làm bài)[\s\S]{0,100}(?:Phần\s*[123I]+)/i.test(snippet);
+            if (!isSummaryHeader) {
+              const leading = m[0].match(/^[\r\n\s]+/);
+              return idx + (leading ? leading[0].length : 0);
+            }
+          }
+          const lastM = all[all.length - 1];
+          const leading = lastM[0].match(/^[\r\n\s]+/);
+          return (lastM.index || 0) + (leading ? leading[0].length : 0);
+        }
+        return -1;
+      };
+
+      const idx1 = findBestSectionMatch([p1Regex, p1AltRegex], text);
+      const idx2 = findBestSectionMatch([p2Regex, p2AltRegex], text);
+      const idx3 = findBestSectionMatch([p3Regex, p3AltRegex], text);
 
       let rawP1 = '';
       let rawP2 = '';
@@ -439,6 +472,9 @@ export default function ExamRepository() {
         rawP1 = text.substring(0, idx2);
         rawP2 = text.substring(idx2, idx3);
         rawP3 = text.substring(idx3);
+      } else if (idx1 !== -1 && idx3 !== -1 && idx1 < idx3) {
+        rawP1 = text.substring(idx1, idx3);
+        rawP3 = text.substring(idx3);
       } else if (idx2 !== -1) {
         rawP1 = text.substring(0, idx2);
         rawP2 = text.substring(idx2);
@@ -449,27 +485,38 @@ export default function ExamRepository() {
         rawP1 = text;
       }
 
-      // 2. Hàm tách các khối câu hỏi độc lập trong một phần (quét các mốc "Câu 1.", "Câu 2.", ...)
-      const extractQuestionBlocks = (secStr: string) => {
+      // Biểu thức regex nhận diện từ khóa Lời giải tuyệt đối chuẩn xác
+      // Không để bị nuốt nhầm "Giải phương trình", "khi giải...", và hỗ trợ giãn chữ như "L ờ i gi ả i:"
+      const robustSolutionRegex = /(?<=^|[\r\n\s]|<[^>]+>)(?:\[?\s*(?:L\s*ờ\s*i\s*g\s*i\s*ả\s*i|B\s*à\s*i\s*g\s*i\s*ả\s*i|H\s*ư\s*ớ\s*n\s*g\s*d\s*ẫ\s*n\s*g\s*i\s*ả\s*i|G\s*i\s*ả\s*i\s*c\s*h\s*i\s*t\s*i\s*ế\s*t|HD\s*giải|HDG|H\s*ư\s*ớ\s*n\s*g\s*d\s*ẫ\s*n)\s*\]?[\:\.\-]?|Giải\s*[\:\.\-])\s*/i;
+
+      // 2. Hàm tách các khối câu hỏi độc lập trong một phần:
+      // Hỗ trợ nhận diện câu hỏi thông minh ngay cả khi file Word thiếu tiền tố 'Câu X.'
+      const extractQuestionBlocks = (secStr: string, expectedType: 'p1' | 'p2' | 'p3' = 'p1') => {
         if (!secStr.trim()) return [];
+
+        // 2.1. Thử nhận diện theo các tiền tố kinh điển 'Câu 1.', 'Câu 2.' hoặc 'Bài 1.'
         const lineRegex = /(?:^|\n|\r)\s*(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s*(\d+)\s*\]?[\.\:\-]?\s*)/gi;
         let matches = Array.from(secStr.matchAll(lineRegex));
 
-        if (matches.length === 0) {
+        if (matches.length < 2) {
           const inlineRegex = /(?:^|\s)(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s*(\d+)\s*\]?[\.\:\-]?\s*)/gi;
           matches = Array.from(secStr.matchAll(inlineRegex));
         }
 
-        if (matches.length === 0) {
+        if (matches.length < 2) {
           const numRegex = /(?:^|\n|\r)\s*(\d+)[\.\)]\s+/g;
           const numMatches = Array.from(secStr.matchAll(numRegex));
           if (numMatches.length >= 2) {
-            matches = numMatches;
+            const nums = numMatches.map(m => parseInt(m[1], 10));
+            const isSeq = nums.slice(0, 3).every((n, i) => i === 0 || n === nums[i - 1] + 1);
+            if (isSeq) {
+              matches = numMatches;
+            }
           }
         }
 
-        const blocks: { num: number; text: string }[] = [];
         if (matches.length > 0) {
+          const blocks: { num: number; text: string }[] = [];
           for (let i = 0; i < matches.length; i++) {
             const match = matches[i];
             const start = match.index! + match[0].length;
@@ -480,43 +527,218 @@ export default function ExamRepository() {
               blocks.push({ num, text: bText });
             }
           }
+          if (blocks.length > 0) return blocks;
         }
-        return blocks;
+
+        // 2.2. Nhận diện cấu trúc thông minh khi KHÔNG CÓ tiền tố 'Câu X.':
+        if (expectedType === 'p1') {
+          // Bóc tách dựa theo chuỗi phương án A, B, C, D
+          const optAMatches = Array.from(secStr.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?A[\.\:\)](?:<\/u>)?\s*/g));
+          const mcStarts: number[] = [];
+          for (let i = 0; i < optAMatches.length; i++) {
+            const aM = optAMatches[i];
+            const nextAIdx = (i + 1 < optAMatches.length) ? optAMatches[i + 1].index! : secStr.length;
+            const chunk = secStr.substring(aM.index!, nextAIdx);
+            const hasB = /(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?B[\.\:\)](?:<\/u>)?\s*/.test(chunk);
+            if (hasB) {
+              mcStarts.push(aM.index!);
+            }
+          }
+
+          if (mcStarts.length >= 1) {
+            const blocks: { num: number; text: string }[] = [];
+            let prevEnd = 0;
+            const secHdr = secStr.match(/(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:I(?![IVX\w])|1\b|THỨ\s*NHẤT)[^\n]*/i);
+            if (secHdr && secHdr.index !== undefined && secHdr.index < mcStarts[0]) {
+              prevEnd = secHdr.index + secHdr[0].length;
+            }
+
+            for (let i = 0; i < mcStarts.length; i++) {
+              const curA = mcStarts[i];
+              const nextA = (i + 1 < mcStarts.length) ? mcStarts[i + 1] : secStr.length;
+              let blockEnd = nextA;
+              if (i + 1 < mcStarts.length) {
+                const chunk = secStr.substring(curA, nextA);
+                const solM = chunk.match(robustSolutionRegex);
+                if (solM && solM.index !== undefined) {
+                  const solPart = chunk.substring(solM.index);
+                  const endM = solPart.match(/(?:\n\s*\n)([\s\S]*)$/);
+                  if (endM) {
+                    blockEnd = curA + solM.index + (solPart.length - endM[1].length);
+                  } else {
+                    const dnl = chunk.lastIndexOf('\n\n');
+                    if (dnl > solM.index) blockEnd = curA + dnl;
+                  }
+                } else {
+                  const dM = chunk.match(/(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?D[\.\:\)](?:<\/u>)?\s*/);
+                  if (dM && dM.index !== undefined) {
+                    const afterD = chunk.substring(dM.index);
+                    const dnl = afterD.search(/\n\s*\n/);
+                    if (dnl !== -1) blockEnd = curA + dM.index + dnl;
+                  }
+                }
+              }
+              const qText = secStr.substring(prevEnd, blockEnd).trim();
+              if (qText) blocks.push({ num: i + 1, text: qText });
+              prevEnd = blockEnd;
+            }
+            if (blocks.length > 0) return blocks;
+          }
+        } else if (expectedType === 'p2') {
+          // Bóc tách dựa theo chuỗi 4 ý đúng sai a, b, c, d
+          const subAMatches = Array.from(secStr.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?[aA][\.\:\)](?:<\/u>)?\s*/g));
+          const tfStarts: number[] = [];
+          for (let i = 0; i < subAMatches.length; i++) {
+            const aM = subAMatches[i];
+            const nextAIdx = (i + 1 < subAMatches.length) ? subAMatches[i + 1].index! : secStr.length;
+            const chunk = secStr.substring(aM.index! + aM[0].length, nextAIdx);
+            const hasB = /(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?[bB][\.\:\)](?:<\/u>)?\s*/.test(chunk);
+            if (!hasB) continue;
+
+            const isAnswerLine = /^(?:đúng|sai|đ\b|s\b|true|false)\b/i.test(chunk.trim());
+            if (isAnswerLine) continue;
+
+            const textBefore = secStr.substring(0, aM.index!);
+            const lastSolMatch = Array.from(textBefore.matchAll(new RegExp(robustSolutionRegex, 'gi'))).pop();
+            if (lastSolMatch) {
+              const textBetween = secStr.substring(lastSolMatch.index!, aM.index!);
+              if (!textBetween.includes('\n\n')) continue;
+            }
+
+            tfStarts.push(aM.index!);
+          }
+
+          if (tfStarts.length >= 1) {
+            const blocks: { num: number; text: string }[] = [];
+            let prevEnd = 0;
+            const secHdr = secStr.match(/(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:II(?![IVX\w])|2\b|THỨ\s*HAI)[^\n]*/i);
+            if (secHdr && secHdr.index !== undefined && secHdr.index < tfStarts[0]) {
+              prevEnd = secHdr.index + secHdr[0].length;
+            }
+
+            for (let i = 0; i < tfStarts.length; i++) {
+              const curA = tfStarts[i];
+              const nextA = (i + 1 < tfStarts.length) ? tfStarts[i + 1] : secStr.length;
+              let blockEnd = nextA;
+              if (i + 1 < tfStarts.length) {
+                const chunk = secStr.substring(curA, nextA);
+                const solM = chunk.match(robustSolutionRegex);
+                if (solM && solM.index !== undefined) {
+                  const solPart = chunk.substring(solM.index);
+                  const endM = solPart.match(/(?:\n\s*\n)([\s\S]*)$/);
+                  if (endM) {
+                    blockEnd = curA + solM.index + (solPart.length - endM[1].length);
+                  } else {
+                    const dnl = chunk.lastIndexOf('\n\n');
+                    if (dnl > solM.index) blockEnd = curA + dnl;
+                  }
+                }
+              }
+              const qText = secStr.substring(prevEnd, blockEnd).trim();
+              if (qText) blocks.push({ num: i + 1, text: qText });
+              prevEnd = blockEnd;
+            }
+            if (blocks.length > 0) return blocks;
+          }
+        } else if (expectedType === 'p3') {
+          // Bóc tách câu hỏi trả lời ngắn dựa vào lời giải / đáp số hoặc các đoạn cách nhau bởi dòng trống
+          const allSol = Array.from(secStr.matchAll(new RegExp(robustSolutionRegex, 'gi')));
+          if (allSol.length >= 1) {
+            const blocks: { num: number; text: string }[] = [];
+            let prevEnd = 0;
+            const secHdr = secStr.match(/(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:III(?![IVX\w])|3\b|THỨ\s*BA)[^\n]*/i);
+            if (secHdr && secHdr.index !== undefined && secHdr.index < allSol[0].index!) {
+              prevEnd = secHdr.index + secHdr[0].length;
+            }
+
+            for (let i = 0; i < allSol.length; i++) {
+              const curSol = allSol[i];
+              const nextSol = allSol[i + 1];
+              let blockEnd = secStr.length;
+              if (nextSol) {
+                const chunk = secStr.substring(curSol.index!, nextSol.index!);
+                const ansM = chunk.match(/(?:Đáp án|Đáp số|Kết quả)\s*[:=]\s*[^\n]+\n/i);
+                if (ansM && ansM.index !== undefined) {
+                  blockEnd = curSol.index! + ansM.index + ansM[0].length;
+                } else {
+                  const dnl = chunk.lastIndexOf('\n\n');
+                  if (dnl !== -1) blockEnd = curSol.index! + dnl;
+                }
+              }
+              const qText = secStr.substring(prevEnd, blockEnd).trim();
+              if (qText) blocks.push({ num: i + 1, text: qText });
+              prevEnd = blockEnd;
+            }
+            if (blocks.length > 0) return blocks;
+          }
+
+          const paras = secStr.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+          if (paras.length >= 2) {
+            return paras.map((p, idx) => ({ num: idx + 1, text: p }));
+          }
+        }
+
+        return [{ num: 1, text: secStr.trim() }];
       };
 
       // 3. Hàm phân tích câu hỏi PHẦN I (Trắc nghiệm nhiều lựa chọn A, B, C, D)
       const parseP1Question = (blockText: string) => {
-        let content = blockText;
-
+        let content = blockText.trim();
         let solution = '';
-        const solM = content.match(/(?:^|\n)\s*(?:Lời giải|Hướng dẫn giải|Giải chi tiết|HD giải|Giải)[:\s]*([\s\S]*)$/i);
+
+        // Tách từ khóa 'Lời giải:' tuyệt đối chuẩn xác
+        const solM = content.match(robustSolutionRegex);
         if (solM && solM.index !== undefined) {
-          solution = solM[1].trim();
+          solution = content.substring(solM.index + solM[0].length).trim();
           content = content.substring(0, solM.index).trim();
         }
 
+        // Bắt các phương án A, B, C, D in hoa độc lập
+        const optRegex = /(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?([A-D])[\.\:\)](?:<\/u>)?\s*/g;
+        const matches = Array.from(content.matchAll(optRegex));
+
+        let firstOptIndex = -1;
+        let optMatches: RegExpMatchArray[] = [];
         const letters = ['A', 'B', 'C', 'D'];
+
+        for (let i = 0; i < matches.length; i++) {
+          if (matches[i][1] === 'A') {
+            const bM = matches.slice(i + 1).find(m => m[1] === 'B');
+            const cM = matches.slice(i + 1).find(m => m[1] === 'C');
+            if (bM && cM) {
+              firstOptIndex = matches[i].index!;
+              const dM = matches.slice(i + 1).find(m => m[1] === 'D');
+              optMatches = [matches[i], bM, cM, dM].filter(Boolean) as RegExpMatchArray[];
+              break;
+            }
+          }
+        }
+
+        let questionText = content;
+        let options: string[] = [];
         let underlineAnswer = '';
 
-        const rawMcMatches = Array.from(content.matchAll(/(?:^|\n|\r|\s+)(?:<u>\s*)?([A-D])[\.\:\)](?:<\/u>)?\s*(.*?)(?=(?:\s+(?:<u>\s*)?[A-D][\.\:\)]|\n\s*(?:<u>\s*)?[A-D][\.\:\)]|$))/g));
+        if (firstOptIndex !== -1 && optMatches.length >= 2) {
+          questionText = content.substring(0, firstOptIndex).trim();
 
-        let options: string[] = [];
-        if (rawMcMatches.length >= 2) {
-          const firstOpt = content.search(/(?:^|\n|\r|\s+)(?:<u>\s*)?[A-D][\.\:\)]/);
-          if (firstOpt !== -1) content = content.substring(0, firstOpt).trim();
+          for (let k = 0; k < optMatches.length; k++) {
+            const curM = optMatches[k];
+            const nextM = optMatches[k + 1];
+            const start = curM.index! + curM[0].length;
+            const end = nextM ? nextM.index! : content.length;
+            const rawBody = content.substring(start, end).trim();
+            const letter = letters[k];
 
-          options = rawMcMatches.slice(0, 4).map((m, idx) => {
-            const fullMatchedStr = m[0];
-            const optBody = m[2].trim();
-            const letter = letters[idx] || m[1].toUpperCase();
-
-            // Nếu chữ cái hoặc nội dung phương án này được gạch chân
-            if (/<u>/i.test(fullMatchedStr) || /<u>/i.test(optBody)) {
+            if (/<u>/i.test(curM[0]) || /<u>/i.test(rawBody)) {
               underlineAnswer = letter;
             }
-            const cleanBody = optBody.replace(/<\/?u>/gi, '').replace(/^[A-D][\.\:\)]\s*/i, '').trim();
-            return `${letter}. ${cleanBody}`;
-          });
+
+            const cleanBody = rawBody
+              .replace(/<\/?u>/gi, '')
+              .replace(/^[A-D][\.\:\)]\s*/i, '')
+              .trim();
+            options.push(`${letter}. ${cleanBody}`);
+          }
         }
 
         while (options.length < 4) {
@@ -533,13 +755,12 @@ export default function ExamRepository() {
 
         let correctAnswer = underlineAnswer;
         if (!correctAnswer) {
-          const ansM = content.match(/(?:^|\n)\s*(?:Đáp án|Đáp số|Kết quả|Chọn)\s*[:=]\s*([^\n]+)/i);
+          const ansM = content.match(/(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả|Chọn)\s*[:=]\s*([^\n]+)/i);
           if (ansM && ansM.index !== undefined) {
             const mLetter = ansM[1].match(/\b([A-D])\b/i);
             if (mLetter) correctAnswer = mLetter[1].toUpperCase();
-            content = content.replace(ansM[0], '').trim();
           } else if (solution) {
-            const solAnsM = solution.match(/(?:^|\n)\s*(?:Đáp án|Đáp số|Kết quả|Chọn)\s*[:=]\s*([^\n]+)/i);
+            const solAnsM = solution.match(/(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả|Chọn)\s*[:=]\s*([^\n]+)/i);
             if (solAnsM) {
               const mLetter = solAnsM[1].match(/\b([A-D])\b/i);
               if (mLetter) correctAnswer = mLetter[1].toUpperCase();
@@ -552,7 +773,7 @@ export default function ExamRepository() {
         }
 
         return {
-          questionText: content.replace(/<\/?u>/gi, '').trim() || blockText.replace(/<\/?u>/gi, '').trim(),
+          questionText: questionText.replace(/<\/?u>/gi, '').trim() || blockText.replace(/<\/?u>/gi, '').trim(),
           options,
           correctAnswer,
           questionType: 'trắc nghiệm' as const,
@@ -562,21 +783,22 @@ export default function ExamRepository() {
 
       // 4. Hàm phân tích câu hỏi PHẦN II (Trắc nghiệm đúng sai 4 ý a, b, c, d)
       const parseP2Question = (blockText: string) => {
-        let content = blockText;
-
+        let content = blockText.trim();
         let solution = '';
-        const solM = content.match(/(?:^|\n)\s*(?:Lời giải|Hướng dẫn giải|Giải chi tiết|HD giải|Giải)[:\s]*([\s\S]*)$/i);
+
+        // Tách từ khóa 'Lời giải:' chuẩn xác
+        const solM = content.match(robustSolutionRegex);
         if (solM && solM.index !== undefined) {
-          solution = solM[1].trim();
+          solution = content.substring(solM.index + solM[0].length).trim();
           content = content.substring(0, solM.index).trim();
         }
 
         const subLetters = ['a', 'b', 'c', 'd'];
         const detectedTfAnswers: { [key: string]: 'Đúng' | 'Sai' } = {};
 
-        // 1. Check for trailing answer summary line in content
-        const summaryRegex = /(?:^|\n)\s*(?:Đáp án|Đáp số|Kết quả)?\s*[:=]?\s*a[\.\)]\s*(đúng|sai|đ|s|true|false)\b[\s\-\,\;]+b[\.\)]\s*(đúng|sai|đ|s|true|false)\b[\s\-\,\;]+c[\.\)]\s*(đúng|sai|đ|s|true|false)\b[\s\-\,\;]+d[\.\)]\s*(đúng|sai|đ|s|true|false)\b/i;
-        const summaryMatch = content.match(summaryRegex);
+        // 1. Kiểm tra dòng tóm tắt đáp án a) Đúng - b) Sai...
+        const summaryRegex = /(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả)?\s*[:=]?\s*a[\.\)]\s*(đúng|sai|đ|s|true|false)\b[\s\-\,\;]+b[\.\)]\s*(đúng|sai|đ|s|true|false)\b[\s\-\,\;]+c[\.\)]\s*(đúng|sai|đ|s|true|false)\b[\s\-\,\;]+d[\.\)]\s*(đúng|sai|đ|s|true|false)\b/i;
+        const summaryMatch = content.match(summaryRegex) || (solution ? solution.match(summaryRegex) : null);
         if (summaryMatch && summaryMatch.index !== undefined) {
           const partA = summaryMatch[1].toLowerCase();
           const partB = summaryMatch[2].toLowerCase();
@@ -587,77 +809,46 @@ export default function ExamRepository() {
           detectedTfAnswers['b'] = (partB.startsWith('đ') || partB === 'true') ? 'Đúng' : 'Sai';
           detectedTfAnswers['c'] = (partC.startsWith('đ') || partC === 'true') ? 'Đúng' : 'Sai';
           detectedTfAnswers['d'] = (partD.startsWith('đ') || partD === 'true') ? 'Đúng' : 'Sai';
-
-          content = content.substring(0, summaryMatch.index).trim();
         }
 
-        if (Object.keys(detectedTfAnswers).length === 0 && solution) {
-          const solSummaryMatch = solution.match(summaryRegex);
-          if (solSummaryMatch) {
-            const partA = solSummaryMatch[1].toLowerCase();
-            const partB = solSummaryMatch[2].toLowerCase();
-            const partC = solSummaryMatch[3].toLowerCase();
-            const partD = solSummaryMatch[4].toLowerCase();
+        // 2. Bóc tách 4 ý a, b, c, d
+        const subRegex = /(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?([a-dA-D])[\.\:\)](?:<\/u>)?\s*/g;
+        const matches = Array.from(content.matchAll(subRegex));
 
-            detectedTfAnswers['a'] = (partA.startsWith('đ') || partA === 'true') ? 'Đúng' : 'Sai';
-            detectedTfAnswers['b'] = (partB.startsWith('đ') || partB === 'true') ? 'Đúng' : 'Sai';
-            detectedTfAnswers['c'] = (partC.startsWith('đ') || partC === 'true') ? 'Đúng' : 'Sai';
-            detectedTfAnswers['d'] = (partD.startsWith('đ') || partD === 'true') ? 'Đúng' : 'Sai';
+        let firstSubIndex = -1;
+        let subMatches: RegExpMatchArray[] = [];
+
+        for (let i = 0; i < matches.length; i++) {
+          if (matches[i][1].toLowerCase() === 'a') {
+            const bM = matches.slice(i + 1).find(m => m[1].toLowerCase() === 'b');
+            const cM = matches.slice(i + 1).find(m => m[1].toLowerCase() === 'c');
+            if (bM && cM) {
+              firstSubIndex = matches[i].index!;
+              const dM = matches.slice(i + 1).find(m => m[1].toLowerCase() === 'd');
+              subMatches = [matches[i], bM, cM, dM].filter(Boolean) as RegExpMatchArray[];
+              break;
+            }
           }
         }
 
-        // 2. Extract options a, b, c, d robustly using letter-specific matchers
+        let questionText = content;
         let options: string[] = [];
-        let firstOptIndex = content.length;
-        const optionBodies: { [key: string]: { body: string; index: number } } = {};
 
-        for (let i = 0; i < subLetters.length; i++) {
-          const l = subLetters[i];
-          const nextLetter = i < subLetters.length - 1 ? subLetters[i + 1] : null;
-          
-          let regex: RegExp;
-          if (nextLetter) {
-            regex = new RegExp(`(?:^|\\s|<[^>]+>)${l}[\\.\\:\\)]\\s*([\\s\\S]*?)(?=(?:\\s|<[^>]+>)${nextLetter}[\\.\\:\\)])`, 'i');
-          } else {
-            regex = new RegExp(`(?:^|\\s|<[^>]+>)${l}[\\.\\:\\)]\\s*([\\s\\S]*?)$`, 'i');
-          }
+        if (firstSubIndex !== -1 && subMatches.length >= 2) {
+          questionText = content.substring(0, firstSubIndex).trim();
 
-          const match = content.match(regex);
-          
-          if (match && match.index !== undefined) {
-            if (match.index < firstOptIndex) {
-              firstOptIndex = match.index;
-            }
-            optionBodies[l] = {
-              body: match[1].trim(),
-              index: match.index
-            };
-          }
-        }
+          for (let k = 0; k < subMatches.length; k++) {
+            const curM = subMatches[k];
+            const nextM = subMatches[k + 1];
+            const start = curM.index! + curM[0].length;
+            const end = nextM ? nextM.index! : content.length;
+            const rawBody = content.substring(start, end).trim();
+            const letter = subLetters[k];
 
-        if (Object.keys(optionBodies).length >= 2) {
-          const questionStem = content.substring(0, firstOptIndex).trim();
-          if (questionStem) {
-            content = questionStem;
-          }
-
-          options = subLetters.map((letter, idx) => {
-            const optObj = optionBodies[letter];
-            if (!optObj) {
-              return `${letter}) Ý thứ ${idx + 1}`;
-            }
-
-            const rawBody = optObj.body;
-
-            if (/<u>\s*(?:đúng|dung|true|đ)\s*<\/u>/i.test(rawBody) || /\b(?:đúng|dung|true)\b/i.test(rawBody)) {
-              if (/<u>\s*(?:đúng|dung|true|đ)\s*<\/u>/i.test(rawBody) || /\(?(?:đúng|dung|true)\)?$/i.test(rawBody)) {
-                detectedTfAnswers[letter] = 'Đúng';
-              }
-            }
-            if (/<u>\s*(?:sai|false|s)\s*<\/u>/i.test(rawBody) || /\b(?:sai|false)\b/i.test(rawBody)) {
-              if (/<u>\s*(?:sai|false|s)\s*<\/u>/i.test(rawBody) || /\(?(?:sai|false)\)?$/i.test(rawBody)) {
-                detectedTfAnswers[letter] = 'Sai';
-              }
+            if (/<u>\s*(?:đúng|dung|true|đ)\s*<\/u>/i.test(rawBody) || /\(?(?:đúng|dung|true)\)?$/i.test(rawBody)) {
+              detectedTfAnswers[letter] = 'Đúng';
+            } else if (/<u>\s*(?:sai|false|s)\s*<\/u>/i.test(rawBody) || /\(?(?:sai|false)\)?$/i.test(rawBody)) {
+              detectedTfAnswers[letter] = 'Sai';
             }
 
             const cleanBody = rawBody
@@ -666,16 +857,8 @@ export default function ExamRepository() {
               .replace(/[\(\[\{]\s*[\}\]\)]/g, '')
               .trim();
 
-            return `${letter}) ${cleanBody || 'Ý thứ ' + (idx + 1)}`;
-          });
-        } else {
-          // Fallback splitting if specific markers weren't matched
-          options = [
-            'a) Ý thứ 1',
-            'b) Ý thứ 2',
-            'c) Ý thứ 3',
-            'd) Ý thứ 4'
-          ];
+            options.push(`${letter}) ${cleanBody || 'Ý thứ ' + (k + 1)}`);
+          }
         }
 
         while (options.length < 4) {
@@ -683,25 +866,23 @@ export default function ExamRepository() {
           options.push(`${letter}) Ý thứ ${options.length + 1}`);
         }
 
-        let correctAnswer = 'a) Đúng - b) Sai - c) Đúng - d) Sai';
-        if (Object.keys(detectedTfAnswers).length >= 1) {
-          correctAnswer = subLetters.map(l => `${l}) ${detectedTfAnswers[l] || 'Đúng'}`).join(' - ');
-        } else {
-          const ansM = content.match(/(?:^|\n)\s*(?:Đáp án|Đáp số|Kết quả)\s*[:=]\s*([^\n]+)/i);
-          if (ansM && ansM.index !== undefined) {
-            if (ansM[1].toLowerCase().includes('đúng') || ansM[1].toLowerCase().includes('sai')) {
-              correctAnswer = ansM[1].trim();
+        // Nhận diện kết quả đúng sai từ lời giải nếu chưa có
+        if (solution) {
+          ['a', 'b', 'c', 'd'].forEach(l => {
+            if (!detectedTfAnswers[l]) {
+              const pat = new RegExp('(?:^|[\\r\\n\\s])' + l + '[\\.\\:\\)]\\s*(?:là\\s*)?(đúng|sai|đ|s|true|false)', 'i');
+              const m = solution.match(pat);
+              if (m) {
+                detectedTfAnswers[l] = (m[1].toLowerCase().startsWith('đ') || m[1].toLowerCase() === 'true') ? 'Đúng' : 'Sai';
+              }
             }
-          } else if (solution && (solution.toLowerCase().includes('đúng') && solution.toLowerCase().includes('sai'))) {
-            const solAnsM = solution.match(/(?:^|\n)\s*(?:Đáp án|Đáp số|Kết quả)\s*[:=]\s*([^\n]+)/i);
-            if (solAnsM && (solAnsM[1].toLowerCase().includes('đúng') || solAnsM[1].toLowerCase().includes('sai'))) {
-              correctAnswer = solAnsM[1].trim();
-            }
-          }
+          });
         }
 
+        const correctAnswer = subLetters.map(l => `${l}) ${detectedTfAnswers[l] || 'Đúng'}`).join(' - ');
+
         return {
-          questionText: content.replace(/<\/?u>/gi, '').trim() || blockText.replace(/<\/?u>/gi, '').trim(),
+          questionText: questionText.replace(/<\/?u>/gi, '').trim() || blockText.replace(/<\/?u>/gi, '').trim(),
           options,
           correctAnswer,
           questionType: 'đúng sai' as const,
@@ -711,12 +892,13 @@ export default function ExamRepository() {
 
       // 5. Hàm phân tích câu hỏi PHẦN III (Trắc nghiệm trả lời ngắn)
       const parseP3Question = (blockText: string) => {
-        let content = blockText;
-
+        let content = blockText.trim();
         let solution = '';
-        const solM = content.match(/(?:^|\n)\s*(?:Lời giải|Hướng dẫn giải|Giải chi tiết|HD giải|Giải)[:\s]*([\s\S]*)$/i);
+
+        // Tách từ khóa 'Lời giải:' chuẩn xác
+        const solM = content.match(robustSolutionRegex);
         if (solM && solM.index !== undefined) {
-          solution = solM[1].trim();
+          solution = content.substring(solM.index + solM[0].length).trim();
           content = content.substring(0, solM.index).trim();
         }
 
@@ -731,14 +913,16 @@ export default function ExamRepository() {
 
         let correctAnswer = underlineAnswer;
         if (!correctAnswer) {
-          const ansM = content.match(/(?:^|\n)\s*(?:Đáp án|Đáp số|Kết quả)\s*[:=]\s*([^\n]+)/i);
-          if (ansM && ansM.index !== undefined) {
-            correctAnswer = ansM[1].trim();
-            content = content.replace(ansM[0], '').trim();
-          } else if (solution) {
-            const solAnsM = solution.match(/(?:^|\n)\s*(?:Đáp án|Đáp số|Kết quả)\s*[:=]\s*([^\n]+)/i);
-            if (solAnsM) {
-              correctAnswer = solAnsM[1].trim();
+          const ansPatterns = [
+            /(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả)\s*[:=]\s*([^\n]+)/i,
+            /(?:^|[\r\n\s])(?:K\s*ế\s*t\s*q\s*u\s*ả\s*l\s*ấ\s*y\s*đ\s*ế\s*n\s*[^\:]*là|K\s*ế\s*t\s*q\s*u\s*ả\s*là)\s*([^\n\.]+)/i
+          ];
+
+          for (const pat of ansPatterns) {
+            const m = content.match(pat) || (solution ? solution.match(pat) : null);
+            if (m) {
+              correctAnswer = m[1].replace(/[\$\,\.\s]+$/, '').trim();
+              break;
             }
           }
         }
@@ -759,20 +943,46 @@ export default function ExamRepository() {
       // 6. Bóc tách câu hỏi chuẩn xác cho từng phần
       const finalQuestions: any[] = [];
 
-      let p1Blocks = rawP1.trim() ? extractQuestionBlocks(rawP1) : [];
-      let p2Blocks = rawP2.trim() ? extractQuestionBlocks(rawP2) : [];
-      let p3Blocks = rawP3.trim() ? extractQuestionBlocks(rawP3) : [];
+      let p1Blocks = rawP1.trim() ? extractQuestionBlocks(rawP1, 'p1') : [];
+      let p2Blocks = rawP2.trim() ? extractQuestionBlocks(rawP2, 'p2') : [];
+      let p3Blocks = rawP3.trim() ? extractQuestionBlocks(rawP3, 'p3') : [];
 
-      // Nếu chia phần bằng tiêu đề nhưng một trong các phần bị thiếu câu hỏi hoặc không tìm thấy
-      if (p1Blocks.length === 0 && p2Blocks.length === 0 && p3Blocks.length === 0) {
+      // Tự động phân bổ lại nếu câu hỏi bị dồn hết vào một phần (do file không có tiêu đề phần 2/3):
+      if (p1Blocks.length > 0 && p2Blocks.length === 0 && p3Blocks.length === 0) {
+        const autoP1: typeof p1Blocks = [];
+        const autoP2: typeof p2Blocks = [];
+        const autoP3: typeof p3Blocks = [];
+
+        p1Blocks.forEach((b) => {
+          const bText = b.text;
+          const tfSubMatches = Array.from(bText.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)[a-d][\.\:\)]\s*/gi));
+          const hasTFKeywords = /(?:đúng|sai|true|false)/i.test(bText);
+          const hasMC = Array.from(bText.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)[A-D][\.\:\)]\s*/g)).length >= 2;
+
+          if (tfSubMatches.length >= 2 && (hasTFKeywords || !hasMC)) {
+            autoP2.push(b);
+          } else if (hasMC) {
+            autoP1.push(b);
+          } else {
+            autoP3.push(b);
+          }
+        });
+
+        if (autoP2.length > 0 || autoP3.length > 0) {
+          p1Blocks = autoP1;
+          p2Blocks = autoP2;
+          p3Blocks = autoP3;
+        }
+      } else if (p1Blocks.length === 0 && p2Blocks.length === 0 && p3Blocks.length === 0) {
         // Tách câu hỏi từ toàn bộ văn bản và tự động phân loại thông minh theo cấu trúc
-        const allBlocks = extractQuestionBlocks(text);
+        const allBlocks = extractQuestionBlocks(text, 'p1');
         allBlocks.forEach((b) => {
           const bText = b.text;
-          const hasTF = Array.from(bText.matchAll(/(?:^|\n|\r|\s+)[a-d][\.\:\)]\s*/gi)).length >= 2;
-          const hasMC = Array.from(bText.matchAll(/(?:^|\n|\r|\s+)[A-D][\.\:\)]\s*/g)).length >= 2;
+          const tfSubMatches = Array.from(bText.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)[a-d][\.\:\)]\s*/gi));
+          const hasTFKeywords = /(?:đúng|sai|true|false)/i.test(bText);
+          const hasMC = Array.from(bText.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)[A-D][\.\:\)]\s*/g)).length >= 2;
 
-          if (hasTF) {
+          if (tfSubMatches.length >= 2 && (hasTFKeywords || !hasMC)) {
             p2Blocks.push(b);
           } else if (hasMC) {
             p1Blocks.push(b);
@@ -1559,7 +1769,7 @@ export default function ExamRepository() {
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gray-50">
               <h3 className="font-bold text-base text-gray-900 flex items-center gap-2">
                 <UploadCloud className="w-5 h-5 text-teal-600" />
-                <span>Tải lên đề kiểm tra mới (.docx / .doc)</span>
+                <span>Tải lên đề kiểm tra mới (.docx, .doc, .pdf)</span>
               </h3>
               <button onClick={() => setShowCreateExamModal(false)} className="p-1 rounded-lg text-gray-400 hover:text-gray-700 cursor-pointer">
                 <X className="w-5 h-5" />
@@ -1604,7 +1814,7 @@ export default function ExamRepository() {
               )}
 
               <div>
-                <label className="block text-xs font-semibold text-gray-700 mb-1.5">Tải file đề (.docx, .doc, .txt):</label>
+                <label className="block text-xs font-semibold text-gray-700 mb-1.5">Tải file đề (.docx, .doc, .txt, .pdf):</label>
                 <div
                   onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
                   onDragLeave={() => setIsDragging(false)}
@@ -1635,7 +1845,7 @@ export default function ExamRepository() {
                     ) : (
                       <>
                         <div className="text-xs font-medium text-gray-700 mb-1">Kéo thả file vào đây hoặc <span className="text-teal-700 font-bold">chọn file</span></div>
-                        <div className="text-[11px] text-gray-400">Hỗ trợ định dạng Word (.docx, .doc) và văn bản (.txt)</div>
+                        <div className="text-[11px] text-gray-400">Hỗ trợ định dạng Word (.docx, .doc), văn bản (.txt) và PDF (.pdf)</div>
                       </>
                     )}
                   </label>
