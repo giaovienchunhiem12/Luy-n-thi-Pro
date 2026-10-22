@@ -61,7 +61,7 @@ export default function Dashboard() {
       'admin87';
 
     if (currentTeacherPass.trim() !== storedPass && currentTeacherPass.trim() !== 'admin87') {
-      setPassChangeMsg({ type: 'error', text: 'Mật khẩu hiện tại không đúng. Mật khẩu mặc định là admin87.' });
+      setPassChangeMsg({ type: 'error', text: 'Mật khẩu hiện tại không đúng.' });
       return;
     }
 
@@ -261,7 +261,7 @@ export default function Dashboard() {
                         type="password"
                         value={currentTeacherPass}
                         onChange={(e) => setCurrentTeacherPass(e.target.value)}
-                        placeholder="Mật khẩu hiện tại (mặc định admin87)"
+                        placeholder="Nhập mật khẩu hiện tại..."
                         className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
                         required
                       />

@@ -196,7 +196,7 @@ export default function Login() {
 
     if (pin !== storedPass && pin !== 'admin87') {
       setTeacherLoginMethod('quick');
-      setErrorMessage('Mật khẩu giáo viên không chính xác. Mật khẩu mặc định là admin87.');
+      setErrorMessage('Mật khẩu giáo viên không chính xác. Vui lòng thử lại.');
       const pinInput = document.getElementById('teacher-pin-input');
       if (pinInput) pinInput.focus();
       return;
@@ -501,7 +501,7 @@ export default function Login() {
                         setTeacherPin(e.target.value);
                         if (errorMessage) setErrorMessage(null);
                       }}
-                      placeholder="Nhập mật khẩu giáo viên (mặc định admin87)"
+                      placeholder="Nhập mật khẩu..."
                       className="w-full pl-10 pr-10 py-2.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-teal-500 outline-none font-mono"
                       autoComplete="off"
                       required
@@ -516,7 +516,7 @@ export default function Login() {
                     </button>
                   </div>
                   <p className="text-[11px] text-slate-500 mt-1">
-                    Thầy cô vui lòng nhập mật khẩu tài khoản Thầy Điền Văn (mặc định: admin87) để đăng nhập vào trang quản trị.
+                    Thầy cô vui lòng nhập mật khẩu để đăng nhập vào trang quản trị.
                   </p>
                 </div>
 
