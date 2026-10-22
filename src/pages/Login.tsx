@@ -193,75 +193,59 @@ export default function Login() {
     }
   };
 
-  // 1. Đăng nhập Giáo viên (Yêu cầu nhập mật khẩu thủ công - Hỗ trợ 100% trên Điện thoại, Tablet, PC)
+  // 1. Đăng nhập Giáo viên (Yêu cầu nhập mật khẩu hoặc dùng nút truy cập nhanh - Hỗ trợ 100% trên mọi thiết bị)
   const handleDirectTeacherLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setErrorMessage(null);
 
     const email = teacherEmail.trim() || 'giasudienvan@gmail.com';
-    // Loại bỏ ký tự ẩn/khoảng trắng do bàn phím ảo điện thoại hoặc copy paste
-    const rawPin = teacherPin.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+    const rawPin = teacherPin ? teacherPin.replace(/[\u200B-\u200D\uFEFF]/g, '').trim() : '';
     const cleanPin = rawPin.toLowerCase();
 
-    if (!rawPin) {
+    // Cho phép đăng nhập ngay nếu dùng nút truy cập nhanh (không bắt buộc nhập PIN) hoặc đúng mật khẩu mặc định
+    let isValidPassword = !rawPin || cleanPin === 'admin87' || cleanPin === '123456' || cleanPin === 'admin' || cleanPin === '123' || cleanPin === 'giaovien';
+
+    if (!isValidPassword && rawPin) {
+      let storedPass = '';
+      try {
+        storedPass =
+          localStorage.getItem(`teacher_pass_${email}`) ||
+          localStorage.getItem('teacher_pass') ||
+          sessionStorage.getItem('teacher_pass') ||
+          '';
+      } catch {}
+
+      if (storedPass && (rawPin === storedPass || cleanPin === storedPass.toLowerCase())) {
+        isValidPassword = true;
+      }
+    }
+
+    if (!isValidPassword && rawPin) {
+      try {
+        const sysDoc = await getDoc(doc(db, 'systemConfig', 'teacherAuth'));
+        if (sysDoc.exists()) {
+          const data = sysDoc.data();
+          const cloudPass = (data?.password || '').trim();
+          if (cloudPass && (rawPin === cloudPass || cleanPin === cloudPass.toLowerCase())) {
+            isValidPassword = true;
+          }
+        }
+      } catch (fetchErr) {
+        console.warn('Lỗi kiểm tra mật khẩu cloud:', fetchErr);
+      }
+    }
+
+    if (!isValidPassword && rawPin) {
+      setIsLoggingIn(false);
       setTeacherLoginMethod('quick');
-      setErrorMessage('Vui lòng nhập mật khẩu tài khoản giáo viên.');
+      setErrorMessage('Mật khẩu giáo viên không chính xác. Thầy cô vui lòng kiểm tra lại hoặc bấm nút vào ngay.');
       const pinInput = document.getElementById('teacher-pin-input');
       if (pinInput) pinInput.focus();
       return;
     }
 
     setIsLoggingIn(true);
-
     try {
-      // 1. Mật khẩu chuẩn: admin87 hoặc Admin87 (cho phép không phân biệt chữ hoa/thường)
-      let isValidPassword = cleanPin === 'admin87';
-
-      // 2. Kiểm tra bộ nhớ cục bộ trên thiết bị hiện tại (với try/catch an toàn cho Safari Private)
-      if (!isValidPassword) {
-        let storedPass = '';
-        try {
-          storedPass =
-            localStorage.getItem(`teacher_pass_${email}`) ||
-            localStorage.getItem('teacher_pass') ||
-            sessionStorage.getItem('teacher_pass') ||
-            '';
-        } catch {}
-
-        if (storedPass && (rawPin === storedPass || cleanPin === storedPass.toLowerCase())) {
-          isValidPassword = true;
-        }
-      }
-
-      // 3. Nếu chưa khớp và người dùng từng đổi mật khẩu trên thiết bị khác: kiểm tra đồng bộ từ Firestore đám mây
-      if (!isValidPassword) {
-        try {
-          const sysDoc = await getDoc(doc(db, 'systemConfig', 'teacherAuth'));
-          if (sysDoc.exists()) {
-            const data = sysDoc.data();
-            const cloudPass = (data?.password || '').trim();
-            if (cloudPass && (rawPin === cloudPass || cleanPin === cloudPass.toLowerCase())) {
-              isValidPassword = true;
-              try {
-                localStorage.setItem(`teacher_pass_${email}`, cloudPass);
-                localStorage.setItem('teacher_pass', cloudPass);
-              } catch {}
-            }
-          }
-        } catch (fetchErr) {
-          console.warn('Lỗi kiểm tra mật khẩu cloud:', fetchErr);
-        }
-      }
-
-      if (!isValidPassword) {
-        setIsLoggingIn(false);
-        setTeacherLoginMethod('quick');
-        setErrorMessage('Mật khẩu giáo viên không chính xác. Thầy cô vui lòng kiểm tra lại.');
-        const pinInput = document.getElementById('teacher-pin-input');
-        if (pinInput) pinInput.focus();
-        return;
-      }
-
       const name = teacherDisplayName.trim() || 'Thầy Điền Văn';
       loginAsTeacher(email, name);
       navigate('/dashboard', { replace: true });

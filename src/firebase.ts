@@ -4,7 +4,7 @@ import {
   getAuth,
   Auth 
 } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, Firestore } from "firebase/firestore";
 import firebaseConfigData from "../firebase-applet-config.json";
 
 const firebaseConfig = {
@@ -18,10 +18,23 @@ const firebaseConfig = {
 
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-export const db = getFirestore(app, (firebaseConfigData as any).firestoreDatabaseId);
+export let db: Firestore;
+try {
+  const dbId = (firebaseConfigData as any).firestoreDatabaseId;
+  db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+} catch (e) {
+  console.warn("Failed to init named firestore, falling back to default:", e);
+  db = getFirestore(app);
+}
 
-// Sử dụng getAuth tiêu chuẩn để tương thích 100% trên Safari/Chrome Mobile, tránh lỗi initializeAuth gây trắng màn hình
-export const auth: Auth = getAuth(app);
+export let auth: Auth;
+try {
+  auth = getAuth(app);
+} catch (e) {
+  console.warn("Failed to init auth:", e);
+  auth = getAuth(app);
+}
 
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+
