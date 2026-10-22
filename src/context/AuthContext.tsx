@@ -95,9 +95,9 @@ export const safeStorage = {
 };
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  // Đọc ngay session đã lưu lúc khởi tạo để tránh bị nhấp nháy hoặc redirect nhầm
+  // Đọc ngay session đã lưu lúc khởi tạo, không bao giờ block render trên mobile
   const [user, setUser] = useState<AppUser | User | null>(() => safeStorage.getTeacherSession());
-  const [loading, setLoading] = useState<boolean>(() => !safeStorage.getTeacherSession());
+  const [loading, setLoading] = useState<boolean>(false);
 
   const loginAsTeacher = (
     email: string = 'giasudienvan@gmail.com',
