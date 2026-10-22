@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, safeStorage } from '../context/AuthContext';
 import { Navigate, Link } from 'react-router-dom';
 import { auth, db } from '../firebase';
 import { signOut } from 'firebase/auth';
@@ -20,11 +20,15 @@ import {
   Plus,
   KeyRound,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  Menu,
+  X
 } from 'lucide-react';
 
 export default function Dashboard() {
   const { user, loading, logout } = useAuth();
+  const activeUser = user || safeStorage.getTeacherSession();
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   // Khởi tạo mặc định vào 'classes' để người dùng tương tác ngay với tính năng Quản lý lớp
   const [view, setView] = useState<'overview' | 'classes' | 'exams' | 'assign' | 'account' | 'notifications'>('overview');
   const [newNotifTitle, setNewNotifTitle] = useState('');
@@ -107,7 +111,7 @@ export default function Dashboard() {
     });
   };
 
-  if (loading) {
+  if (loading && !activeUser) {
     return (
       <div className="flex h-screen items-center justify-center bg-slate-50">
         <div className="text-center space-y-3">
@@ -118,7 +122,7 @@ export default function Dashboard() {
     );
   }
 
-  if (!user) return <Navigate to="/" replace />;
+  if (!activeUser) return <Navigate to="/" replace />;
 
   const handleLogout = async () => {
     try {
@@ -236,11 +240,11 @@ export default function Dashboard() {
               <div className="space-y-4">
                 <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg">
                   <div className="w-14 h-14 rounded-full bg-teal-600 text-white flex items-center justify-center text-xl font-bold uppercase">
-                    {user.email?.charAt(0) || 'G'}
+                    {activeUser?.email?.charAt(0) || 'G'}
                   </div>
                   <div>
-                    <div className="font-semibold text-gray-900">{user.displayName || 'Giáo viên'}</div>
-                    <div className="text-sm text-gray-500">{user.email}</div>
+                    <div className="font-semibold text-gray-900">{activeUser?.displayName || 'Thầy Điền Văn'}</div>
+                    <div className="text-sm text-gray-500">{activeUser?.email || 'giasudienvan@gmail.com'}</div>
                     <div className="text-xs text-teal-600 font-medium mt-1">Vai trò: Giáo viên quản trị</div>
                   </div>
                 </div>
@@ -357,7 +361,7 @@ export default function Dashboard() {
                   <span>Trang Tổng quan Giáo viên</span>
                 </span>
                 <h1 className="text-xl md:text-2xl font-black">
-                  Xin chào, {user.displayName || user.email || 'Giáo viên'}!
+                  Xin chào, {activeUser?.displayName || activeUser?.email || 'Thầy Điền Văn'}!
                 </h1>
                 <p className="text-xs md:text-sm text-teal-100 max-w-2xl leading-relaxed">
                   Chào mừng thầy cô trở lại hệ thống Luyện Thi Pro. Dưới đây là các mục quản lý, thông báo, lớp học, kho đề, giao bài và tài khoản.
@@ -454,9 +458,87 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="flex min-h-screen bg-gray-50 font-sans">
-      {/* Sidebar điều hướng chuyên nghiệp */}
-      <aside className="w-64 bg-white border-r border-gray-200 flex flex-col justify-between shrink-0 shadow-sm">
+    <div className="flex flex-col md:flex-row min-h-screen bg-gray-50 font-sans">
+      {/* 1. Header di động (Chỉ hiện trên điện thoại & tablet nhỏ: md:hidden) */}
+      <header className="md:hidden flex items-center justify-between p-3.5 bg-white border-b border-gray-200 sticky top-0 z-30 shadow-xs">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-lg bg-teal-600 text-white flex items-center justify-center font-bold text-sm shadow-sm">
+            <Sparkles className="w-4 h-4" />
+          </div>
+          <div>
+            <h2 className="font-bold text-gray-900 text-sm leading-tight">Luyện Thi Pro</h2>
+            <p className="text-[10px] text-teal-700 font-medium truncate max-w-[170px]">
+              {activeUser?.displayName || 'Thầy Điền Văn'}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            className="p-2 text-gray-700 hover:text-gray-950 rounded-xl hover:bg-gray-100 transition-colors cursor-pointer"
+            aria-label="Menu"
+          >
+            {isMobileMenuOpen ? <X className="w-6 h-6 text-gray-900" /> : <Menu className="w-6 h-6 text-gray-900" />}
+          </button>
+        </div>
+      </header>
+
+      {/* 2. Menu trượt xuống cho điện thoại (Mobile Drawer) */}
+      {isMobileMenuOpen && (
+        <div className="md:hidden bg-white border-b border-gray-200 p-4 space-y-3 z-30 shadow-md animate-in slide-in-from-top duration-200">
+          <nav className="space-y-1">
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const isActive = view === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setView(item.id as any);
+                    setIsMobileMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                    isActive
+                      ? 'bg-teal-50 text-teal-800 font-bold border border-teal-200 shadow-2xs'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+                >
+                  <Icon className={`w-4 h-4 ${isActive ? 'text-teal-600' : 'text-gray-400'}`} />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+            <Link
+              to="/student-dashboard"
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-indigo-700 hover:bg-indigo-50 transition-all cursor-pointer mt-2 border border-indigo-100"
+            >
+              <GraduationCap className="w-4 h-4 text-indigo-600" />
+              <span>Xem giao diện Học sinh</span>
+            </Link>
+          </nav>
+
+          <div className="pt-3 border-t border-gray-100 flex items-center justify-between">
+            <div className="text-xs text-gray-500 truncate max-w-[200px]">
+              {activeUser?.email || 'giasudienvan@gmail.com'}
+            </div>
+            <button
+              onClick={() => {
+                setIsMobileMenuOpen(false);
+                handleLogout();
+              }}
+              className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Đăng xuất</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 3. Sidebar điều hướng màn hình máy tính (Desktop / Laptop) */}
+      <aside className="hidden md:flex w-64 bg-white border-r border-gray-200 flex-col justify-between shrink-0 shadow-sm min-h-screen sticky top-0">
         <div>
           {/* Logo Brand */}
           <div className="p-5 border-b border-gray-100 flex items-center gap-3">
@@ -492,11 +574,11 @@ export default function Dashboard() {
               );
             })}
             <Link
-                to="/student-dashboard"
-                className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium text-indigo-700 hover:bg-indigo-50 transition-all cursor-pointer mt-2 border border-indigo-100"
+              to="/student-dashboard"
+              className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-lg text-sm font-medium text-indigo-700 hover:bg-indigo-50 transition-all cursor-pointer mt-2 border border-indigo-100"
             >
-                <GraduationCap className="w-4 h-4" />
-                <span>Xem giao diện Học sinh</span>
+              <GraduationCap className="w-4 h-4" />
+              <span>Xem giao diện Học sinh</span>
             </Link>
           </nav>
         </div>
@@ -505,14 +587,14 @@ export default function Dashboard() {
         <div className="p-4 border-t border-gray-100 bg-gray-50/50">
           <div className="flex items-center gap-3 mb-3">
             <div className="w-9 h-9 rounded-full bg-teal-700 text-white flex items-center justify-center font-bold text-sm shrink-0">
-              {user.email?.charAt(0).toUpperCase() || 'U'}
+              {activeUser?.email?.charAt(0).toUpperCase() || 'T'}
             </div>
             <div className="overflow-hidden">
               <div className="text-xs font-semibold text-gray-800 truncate">
-                {user.displayName || 'Giáo viên'}
+                {activeUser?.displayName || 'Thầy Điền Văn'}
               </div>
-              <div className="text-xs text-gray-500 truncate" title={user.email || ''}>
-                {user.email}
+              <div className="text-xs text-gray-500 truncate" title={activeUser?.email || ''}>
+                {activeUser?.email || 'giasudienvan@gmail.com'}
               </div>
             </div>
           </div>
@@ -527,8 +609,10 @@ export default function Dashboard() {
         </div>
       </aside>
 
-      {/* Main Content Area */}
-      {renderContent()}
+      {/* 4. Vùng nội dung chính (Co giãn 100% linh hoạt trên mọi kích thước màn hình) */}
+      <main className="flex-1 min-w-0 flex flex-col overflow-x-hidden">
+        {renderContent()}
+      </main>
     </div>
   );
 }

@@ -11,7 +11,7 @@ import {
 import { auth, db } from '../firebase';
 import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, safeStorage } from '../context/AuthContext';
 import {
   Sparkles,
   GraduationCap,
@@ -46,6 +46,9 @@ export default function Login() {
   const { user, loading, loginAsTeacher } = useAuth();
   const navigate = useNavigate();
 
+  // Chế độ xem trên thiết bị di động ('teacher' hoặc 'student')
+  const [mobileRole, setMobileRole] = useState<'teacher' | 'student'>('teacher');
+
   // Trạng thái thông báo lỗi & tải
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
@@ -74,23 +77,26 @@ export default function Login() {
   const [selectedStudent, setSelectedStudent] = useState('');
   const [password, setPassword] = useState('');
 
-  // Điều hướng nếu đã đăng nhập thành công
+  // Điều hướng nếu đã có phiên đăng nhập hoạt động
   useEffect(() => {
-    if (!loading && user) {
+    const activeTeacher = user || safeStorage.getTeacherSession();
+    if (activeTeacher) {
       navigate('/dashboard', { replace: true });
+      return;
     }
 
     // Kiểm tra kết quả Redirect nếu người dùng vừa hoàn tất đăng nhập Google qua Redirect
-    getRedirectResult(auth)
-      .then((result) => {
-        if (result && result.user) {
-          navigate('/dashboard', { replace: true });
-        }
-      })
-      .catch((error) => {
-        // Chỉ ghi nhận cảnh báo khi khởi động nguội, không hiện cảnh báo đỏ làm rối người dùng trên các thiết bị/domain khác
-        console.warn('Redirect result silent check:', error?.code);
-      });
+    try {
+      getRedirectResult(auth)
+        .then((result) => {
+          if (result && result.user) {
+            navigate('/dashboard', { replace: true });
+          }
+        })
+        .catch((error) => {
+          console.warn('Redirect result silent check:', error?.code);
+        });
+    } catch (e) {}
 
     // Lấy danh sách học sinh từ tất cả các lớp trong Quản lý lớp
     const fetchStudents = async () => {
@@ -172,9 +178,11 @@ export default function Login() {
     setErrorMessage(null);
 
     const email = teacherEmail.trim() || 'giasudienvan@gmail.com';
-    const pin = teacherPin.trim();
+    // Loại bỏ ký tự ẩn/khoảng trắng do bàn phím ảo điện thoại hoặc copy paste
+    const rawPin = teacherPin.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
+    const cleanPin = rawPin.toLowerCase();
 
-    if (!pin) {
+    if (!rawPin) {
       setTeacherLoginMethod('quick');
       setErrorMessage('Vui lòng nhập mật khẩu tài khoản giáo viên.');
       const pinInput = document.getElementById('teacher-pin-input');
@@ -185,8 +193,7 @@ export default function Login() {
     setIsLoggingIn(true);
 
     try {
-      // 1. Kiểm tra mật khẩu mặc định (cho phép không phân biệt hoa/thường: admin87 hoặc Admin87 trên điện thoại)
-      const cleanPin = pin.toLowerCase();
+      // 1. Mật khẩu chuẩn: admin87 hoặc Admin87 (cho phép không phân biệt chữ hoa/thường)
       let isValidPassword = cleanPin === 'admin87';
 
       // 2. Kiểm tra bộ nhớ cục bộ trên thiết bị hiện tại (với try/catch an toàn cho Safari Private)
@@ -200,7 +207,7 @@ export default function Login() {
             '';
         } catch {}
 
-        if (storedPass && (pin === storedPass || cleanPin === storedPass.toLowerCase())) {
+        if (storedPass && (rawPin === storedPass || cleanPin === storedPass.toLowerCase())) {
           isValidPassword = true;
         }
       }
@@ -212,7 +219,7 @@ export default function Login() {
           if (sysDoc.exists()) {
             const data = sysDoc.data();
             const cloudPass = (data?.password || '').trim();
-            if (cloudPass && (pin === cloudPass || cleanPin === cloudPass.toLowerCase())) {
+            if (cloudPass && (rawPin === cloudPass || cleanPin === cloudPass.toLowerCase())) {
               isValidPassword = true;
               try {
                 localStorage.setItem(`teacher_pass_${email}`, cloudPass);
@@ -341,15 +348,15 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-4xl bg-white rounded-3xl shadow-lg border border-gray-200 p-8 md:p-12">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-3 sm:p-6">
+      <div className="w-full max-w-4xl bg-white rounded-3xl shadow-lg border border-gray-200 p-5 sm:p-8 md:p-12">
         {/* Brand Header */}
-        <div className="text-center mb-8">
-          <div className="w-16 h-16 rounded-2xl bg-teal-600 text-white flex items-center justify-center mx-auto shadow-md mb-4">
-            <Sparkles className="w-8 h-8" />
+        <div className="text-center mb-6 md:mb-8">
+          <div className="w-14 h-14 md:w-16 md:h-16 rounded-2xl bg-teal-600 text-white flex items-center justify-center mx-auto shadow-md mb-3 md:mb-4">
+            <Sparkles className="w-7 h-7 md:w-8 md:h-8" />
           </div>
-          <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Luyện Thi Pro</h1>
-          <p className="text-slate-500">Hệ thống quản lý lớp học và luyện thi trực tuyến</p>
+          <h1 className="text-2xl md:text-3xl font-bold text-slate-900 tracking-tight">Luyện Thi Pro</h1>
+          <p className="text-xs md:text-sm text-slate-500">Hệ thống quản lý lớp học và luyện thi trực tuyến</p>
         </div>
 
         {/* Thông báo thành công / hướng dẫn */}
@@ -439,9 +446,43 @@ export default function Login() {
           </div>
         )}
 
-        <div className="grid md:grid-cols-2 gap-10 md:gap-12">
+        {/* Bộ chọn vai trò trên thiết bị di động (Mobile Role Switcher) */}
+        <div className="md:hidden flex bg-slate-100 p-1 rounded-2xl mb-6 text-xs font-bold gap-1 shadow-2xs">
+          <button
+            type="button"
+            onClick={() => {
+              setMobileRole('teacher');
+              setErrorMessage(null);
+            }}
+            className={`flex-1 py-2.5 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+              mobileRole === 'teacher'
+                ? 'bg-teal-700 text-white shadow-xs font-bold'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4" />
+            <span>Khu vực Giáo viên</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMobileRole('student');
+              setErrorMessage(null);
+            }}
+            className={`flex-1 py-2.5 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+              mobileRole === 'student'
+                ? 'bg-indigo-600 text-white shadow-xs font-bold'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <GraduationCap className="w-4 h-4" />
+            <span>Khu vực Học sinh</span>
+          </button>
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-8 md:gap-12">
           {/* Cột 1: DÀNH CHO GIÁO VIÊN */}
-          <div className="space-y-5">
+          <div className={`space-y-5 ${mobileRole === 'teacher' ? 'block' : 'hidden md:block'}`}>
             <div className="text-center">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-teal-50 text-teal-700 border border-teal-200 mb-2">
                 <ShieldCheck className="w-3.5 h-3.5" /> Khu vực Quản trị
@@ -717,7 +758,7 @@ export default function Login() {
           </div>
 
           {/* Cột 2: DÀNH CHO HỌC SINH */}
-          <div className="space-y-5 border-t md:border-t-0 md:border-l border-slate-200 pt-8 md:pt-0 md:pl-10">
+          <div className={`space-y-5 border-t md:border-t-0 md:border-l border-slate-200 pt-8 md:pt-0 md:pl-10 ${mobileRole === 'student' ? 'block' : 'hidden md:block'}`}>
             <div className="text-center">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 mb-2">
                 <GraduationCap className="w-3.5 h-3.5" /> Khu vực Học sinh

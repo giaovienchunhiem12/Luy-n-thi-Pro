@@ -93,8 +93,8 @@ export default function StudentLogin() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white rounded-3xl shadow-sm border border-gray-200 p-8 space-y-6">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-3 sm:p-6">
+      <div className="w-full max-w-md bg-white rounded-3xl shadow-sm border border-gray-200 p-5 sm:p-8 space-y-6">
         <div className="text-center space-y-2">
           <div className="w-12 h-12 rounded-2xl bg-teal-600 text-white flex items-center justify-center mx-auto shadow-sm">
             <GraduationCap className="w-6 h-6" />
