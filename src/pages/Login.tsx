@@ -47,7 +47,8 @@ export default function Login() {
   // Thông tin giáo viên
   const [teacherEmail, setTeacherEmail] = useState('giasudienvan@gmail.com');
   const [teacherDisplayName, setTeacherDisplayName] = useState('Thầy Điền Văn');
-  const [teacherPin, setTeacherPin] = useState('123');
+  const [teacherPin, setTeacherPin] = useState('');
+  const [showTeacherPin, setShowTeacherPin] = useState(false);
 
   // Form đăng nhập Email & Mật khẩu của giáo viên
   const [teacherPassword, setTeacherPassword] = useState('');
@@ -171,13 +172,38 @@ export default function Login() {
     }
   };
 
-  // 1. Đăng nhập nhanh Giáo viên (Hoạt động 100% trong mọi môi trường: Vercel, iframe, localhost)
+  // 1. Đăng nhập Giáo viên (Yêu cầu nhập mật khẩu thủ công)
   const handleDirectTeacherLogin = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    setIsLoggingIn(true);
     setErrorMessage(null);
+
+    const email = teacherEmail.trim() || 'giasudienvan@gmail.com';
+    const pin = teacherPin.trim();
+
+    if (!pin) {
+      setTeacherLoginMethod('quick');
+      setErrorMessage('Vui lòng nhập mật khẩu tài khoản giáo viên.');
+      const pinInput = document.getElementById('teacher-pin-input');
+      if (pinInput) pinInput.focus();
+      return;
+    }
+
+    // Kiểm tra mật khẩu (mật khẩu mặc định admin87 hoặc mật khẩu giáo viên đã lưu)
+    const storedPass =
+      localStorage.getItem(`teacher_pass_${email}`) ||
+      localStorage.getItem('teacher_pass') ||
+      'admin87';
+
+    if (pin !== storedPass && pin !== 'admin87') {
+      setTeacherLoginMethod('quick');
+      setErrorMessage('Mật khẩu giáo viên không chính xác. Mật khẩu mặc định là admin87.');
+      const pinInput = document.getElementById('teacher-pin-input');
+      if (pinInput) pinInput.focus();
+      return;
+    }
+
+    setIsLoggingIn(true);
     try {
-      const email = teacherEmail.trim() || 'giasudienvan@gmail.com';
       const name = teacherDisplayName.trim() || 'Thầy Điền Văn';
       loginAsTeacher(email, name);
       navigate('/dashboard', { replace: true });
@@ -277,8 +303,8 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-4xl bg-white rounded-3xl shadow-lg border border-slate-200 p-8 md:p-12">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+      <div className="w-full max-w-4xl bg-white rounded-3xl shadow-lg border border-gray-200 p-8 md:p-12">
         {/* Brand Header */}
         <div className="text-center mb-8">
           <div className="w-16 h-16 rounded-2xl bg-teal-600 text-white flex items-center justify-center mx-auto shadow-md mb-4">
@@ -386,7 +412,7 @@ export default function Login() {
               <p className="text-xs text-slate-500 mt-0.5">Quản lý lớp học, ngân hàng đề và phân quyền kiểm tra</p>
             </div>
 
-            {/* Chuyển đổi phương thức đăng nhập: Nhanh | Google | Email */}
+            {/* Chuyển đổi phương thức đăng nhập: Mật khẩu | Google | Email */}
             <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-semibold gap-1">
               <button
                 type="button"
@@ -400,8 +426,8 @@ export default function Login() {
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <Zap className="w-3.5 h-3.5" />
-                <span>Nhanh (Khuyên dùng)</span>
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>Mật khẩu</span>
               </button>
               <button
                 type="button"
@@ -434,7 +460,7 @@ export default function Login() {
               </button>
             </div>
 
-            {/* Phương thức 1: Đăng nhập Nhanh Giáo viên (100% không bao giờ lỗi) */}
+            {/* Phương thức 1: Đăng nhập Mật khẩu Giáo viên (Nhập thủ công) */}
             {teacherLoginMethod === 'quick' && (
               <form onSubmit={handleDirectTeacherLogin} className="space-y-4 pt-1">
                 <div className="p-3.5 bg-teal-50/70 border border-teal-200/80 rounded-2xl space-y-2">
@@ -457,21 +483,40 @@ export default function Login() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-slate-700 mb-1">
-                    Mã xác thực giáo viên (PIN)
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Mật khẩu giáo viên
+                    </label>
+                    <span className="text-[11px] text-teal-700 font-medium bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
+                      Nhập thủ công
+                    </span>
+                  </div>
                   <div className="relative">
                     <Lock className="w-4 h-4 absolute left-3.5 top-3 text-slate-400" />
                     <input
-                      type="password"
+                      id="teacher-pin-input"
+                      type={showTeacherPin ? 'text' : 'password'}
                       value={teacherPin}
-                      onChange={(e) => setTeacherPin(e.target.value)}
-                      placeholder="Mã PIN (mặc định 123)"
-                      className="w-full pl-10 pr-3.5 py-2.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-teal-500 outline-none font-mono"
+                      onChange={(e) => {
+                        setTeacherPin(e.target.value);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      placeholder="Nhập mật khẩu giáo viên (mặc định admin87)"
+                      className="w-full pl-10 pr-10 py-2.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-teal-500 outline-none font-mono"
+                      autoComplete="off"
+                      required
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowTeacherPin(!showTeacherPin)}
+                      className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      title={showTeacherPin ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                    >
+                      {showTeacherPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
-                  <p className="text-[11px] text-slate-400 mt-1">
-                    Hệ thống đã nhận diện tài khoản Thầy Điền Văn. Thầy bấm nút bên dưới để vào ngay.
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Thầy cô vui lòng nhập mật khẩu tài khoản Thầy Điền Văn (mặc định: admin87) để đăng nhập vào trang quản trị.
                   </p>
                 </div>
 
@@ -480,8 +525,8 @@ export default function Login() {
                   disabled={isLoggingIn}
                   className="w-full flex items-center justify-center gap-2 px-4 py-3.5 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-sm font-bold transition-all shadow-md cursor-pointer disabled:opacity-70"
                 >
-                  <Zap className="w-4 h-4 text-amber-300 fill-amber-300" />
-                  <span>{isLoggingIn ? 'Đang chuyển hướng...' : 'Vào Dashboard Giáo viên ngay'}</span>
+                  <KeyRound className="w-4 h-4" />
+                  <span>{isLoggingIn ? 'Đang xác thực...' : 'Đăng nhập Giáo viên'}</span>
                 </button>
               </form>
             )}

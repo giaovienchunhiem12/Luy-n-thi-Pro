@@ -92,17 +92,18 @@ export default function StudentLogin() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-sm border border-slate-200/80 p-8 space-y-6">
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+      <div className="w-full max-w-md bg-white rounded-3xl shadow-sm border border-gray-200 p-8 space-y-6">
         <div className="text-center space-y-2">
-          <div className="w-12 h-12 rounded-xl bg-indigo-600 text-white flex items-center justify-center mx-auto shadow-sm">
+          <div className="w-12 h-12 rounded-2xl bg-teal-600 text-white flex items-center justify-center mx-auto shadow-sm">
             <GraduationCap className="w-6 h-6" />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Đăng nhập Học sinh</h1>
+          <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Đăng nhập Học sinh</h1>
+          <p className="text-xs text-gray-500">Cổng luyện thi và làm bài trắc nghiệm trực tuyến</p>
         </div>
 
         {errorMessage && (
-          <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-start gap-2.5 text-xs text-rose-700">
+          <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-2.5 text-xs text-rose-700">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
             <span>{errorMessage}</span>
           </div>
@@ -110,11 +111,11 @@ export default function StudentLogin() {
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Họ tên học sinh</label>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Họ tên học sinh</label>
             <select
                 value={selectedStudent}
                 onChange={(e) => setSelectedStudent(e.target.value)}
-                className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+                className="w-full px-3.5 py-2.5 text-xs border border-gray-300 rounded-xl focus:ring-2 focus:ring-teal-500 outline-none bg-white"
                 disabled={isLoading}
             >
                 <option value="">Chọn học sinh</option>
@@ -124,24 +125,34 @@ export default function StudentLogin() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Mật khẩu</label>
+            <label className="block text-xs font-semibold text-gray-700 mb-1">Mật khẩu</label>
             <input
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+              className="w-full px-3.5 py-2.5 text-xs border border-gray-300 rounded-xl focus:ring-2 focus:ring-teal-500 outline-none"
               placeholder="Nhập mật khẩu (mặc định 123)"
               disabled={isLoading}
             />
           </div>
           <button
             type="submit"
-            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-medium transition-all cursor-pointer disabled:opacity-50"
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-teal-700 hover:bg-teal-800 text-white rounded-xl text-xs font-bold transition-all cursor-pointer disabled:opacity-50 shadow-sm"
             disabled={isLoading}
           >
             {isLoading ? 'Đang đăng nhập...' : 'Đăng nhập'} <ArrowRight className="w-4 h-4" />
           </button>
         </form>
+
+        <div className="text-center pt-2 border-t border-gray-100">
+          <Link
+            to="/"
+            className="text-xs text-teal-700 hover:text-teal-900 font-semibold inline-flex items-center gap-1.5 transition-colors"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Chuyển sang Khu vực Giáo viên</span>
+          </Link>
+        </div>
       </div>
     </div>
   );

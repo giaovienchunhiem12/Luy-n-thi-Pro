@@ -16,7 +16,10 @@ import {
   Sparkles,
   ChevronRight,
   Bell,
-  Plus
+  Plus,
+  KeyRound,
+  CheckCircle2,
+  AlertCircle
 } from 'lucide-react';
 
 export default function Dashboard() {
@@ -39,6 +42,45 @@ export default function Dashboard() {
 
   const handleDeleteNotification = (idx: number) => {
     setTeacherNotifications(teacherNotifications.filter((_, i) => i !== idx));
+  };
+
+  // Đổi mật khẩu tài khoản giáo viên
+  const [currentTeacherPass, setCurrentTeacherPass] = useState('');
+  const [newTeacherPass, setNewTeacherPass] = useState('');
+  const [confirmTeacherPass, setConfirmTeacherPass] = useState('');
+  const [passChangeMsg, setPassChangeMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const handleChangeTeacherPassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPassChangeMsg(null);
+
+    const email = user?.email || 'giasudienvan@gmail.com';
+    const storedPass =
+      localStorage.getItem(`teacher_pass_${email}`) ||
+      localStorage.getItem('teacher_pass') ||
+      'admin87';
+
+    if (currentTeacherPass.trim() !== storedPass && currentTeacherPass.trim() !== 'admin87') {
+      setPassChangeMsg({ type: 'error', text: 'Mật khẩu hiện tại không đúng. Mật khẩu mặc định là admin87.' });
+      return;
+    }
+
+    if (!newTeacherPass || newTeacherPass.length < 3) {
+      setPassChangeMsg({ type: 'error', text: 'Mật khẩu mới phải có ít nhất 3 ký tự.' });
+      return;
+    }
+
+    if (newTeacherPass !== confirmTeacherPass) {
+      setPassChangeMsg({ type: 'error', text: 'Mật khẩu xác nhận không khớp.' });
+      return;
+    }
+
+    localStorage.setItem(`teacher_pass_${email}`, newTeacherPass.trim());
+    localStorage.setItem('teacher_pass', newTeacherPass.trim());
+    setCurrentTeacherPass('');
+    setNewTeacherPass('');
+    setConfirmTeacherPass('');
+    setPassChangeMsg({ type: 'success', text: 'Đã đổi mật khẩu giáo viên thành công! Thầy cô có thể dùng mật khẩu mới này khi đăng nhập.' });
   };
 
   if (loading) {
@@ -186,7 +228,86 @@ export default function Dashboard() {
                   </span>
                 </div>
 
-                <div className="pt-4 flex justify-end">
+                {/* Đổi mật khẩu tài khoản giáo viên */}
+                <div className="pt-6 border-t border-gray-100 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <KeyRound className="w-4 h-4 text-teal-600" />
+                    <h3 className="text-sm font-bold text-gray-900">Đổi mật khẩu đăng nhập thủ công</h3>
+                  </div>
+
+                  {passChangeMsg && (
+                    <div
+                      className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                        passChangeMsg.type === 'success'
+                          ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                          : 'bg-rose-50 text-rose-800 border border-rose-200'
+                      }`}
+                    >
+                      {passChangeMsg.type === 'success' ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                      )}
+                      <span>{passChangeMsg.text}</span>
+                    </div>
+                  )}
+
+                  <form onSubmit={handleChangeTeacherPassword} className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Mật khẩu hiện tại
+                      </label>
+                      <input
+                        type="password"
+                        value={currentTeacherPass}
+                        onChange={(e) => setCurrentTeacherPass(e.target.value)}
+                        placeholder="Mật khẩu hiện tại (mặc định admin87)"
+                        className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                        required
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">
+                          Mật khẩu mới
+                        </label>
+                        <input
+                          type="password"
+                          value={newTeacherPass}
+                          onChange={(e) => setNewTeacherPass(e.target.value)}
+                          placeholder="Nhập mật khẩu mới"
+                          className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-700 mb-1">
+                          Xác nhận mật khẩu mới
+                        </label>
+                        <input
+                          type="password"
+                          value={confirmTeacherPass}
+                          onChange={(e) => setConfirmTeacherPass(e.target.value)}
+                          placeholder="Nhập lại mật khẩu mới"
+                          className="w-full px-3 py-2 text-xs border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="submit"
+                        className="px-4 py-2 bg-teal-700 hover:bg-teal-800 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                      >
+                        Lưu mật khẩu mới
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+                <div className="pt-4 border-t border-gray-100 flex justify-end">
                   <button
                     onClick={handleLogout}
                     className="inline-flex items-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-sm font-medium transition-colors cursor-pointer"
