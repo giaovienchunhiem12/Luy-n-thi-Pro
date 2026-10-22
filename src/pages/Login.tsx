@@ -533,19 +533,6 @@ export default function Login() {
               <p className="text-xs text-slate-500 mt-0.5">Quản lý lớp học, ngân hàng đề và phân quyền kiểm tra</p>
             </div>
 
-            {/* Nút 1 chạm siêu tốc cho Giáo viên (khuyên dùng trên điện thoại) */}
-            <div className="p-3.5 bg-teal-700 text-white rounded-2xl shadow-sm text-center space-y-2">
-              <div className="text-xs font-bold">🚀 Đăng nhập nhanh 1 chạm (Khuyên dùng trên Điện thoại):</div>
-              <button
-                type="button"
-                onClick={() => handleDirectTeacherLogin()}
-                className="w-full py-3 bg-white text-teal-800 hover:bg-teal-50 font-extrabold rounded-xl text-xs uppercase tracking-wider cursor-pointer shadow-sm flex items-center justify-center gap-2"
-              >
-                <Zap className="w-4 h-4 text-amber-500 fill-amber-500" />
-                <span>Vào Dashboard Thầy Điền Văn Ngay</span>
-              </button>
-            </div>
-
             {/* Chuyển đổi phương thức đăng nhập: Mật khẩu | Google | Email */}
             <div className="flex bg-slate-100 p-1 rounded-xl text-xs font-semibold gap-1">
               <button
@@ -814,22 +801,6 @@ export default function Login() {
               </span>
               <h2 className="text-xl font-bold text-slate-800">Dành cho Học sinh</h2>
               <p className="text-xs text-slate-500 mt-0.5">Luyện thi trắc nghiệm và xem kết quả bài làm</p>
-            </div>
-
-            {/* Nút 1 chạm siêu tốc cho Học sinh */}
-            <div className="p-3.5 bg-indigo-600 text-white rounded-2xl shadow-sm text-center space-y-2">
-              <div className="text-xs font-bold">🚀 Vào thi nhanh học sinh:</div>
-              <button
-                type="button"
-                onClick={() => {
-                  const sId = selectedStudent || students[0]?.id || 'SBD001';
-                  window.location.href = `/student-dashboard?studentId=${encodeURIComponent(sId)}`;
-                }}
-                className="w-full py-3 bg-white text-indigo-900 hover:bg-indigo-50 font-extrabold rounded-xl text-xs uppercase tracking-wider cursor-pointer shadow-sm flex items-center justify-center gap-2"
-              >
-                <ArrowRight className="w-4 h-4 text-indigo-600" />
-                <span>Vào Thi Ngay Lập Tức</span>
-              </button>
             </div>
 
             <form onSubmit={handleStudentLogin} className="space-y-4 pt-1">
