@@ -1,11 +1,7 @@
 {
   "rewrites": [
     {
-      "source": "/__/auth/:path*",
-      "destination": "https://lop12-thpt-phulam.firebaseapp.com/__/auth/:path*"
-    },
-    {
-      "source": "/(.*)",
+      "source": "/((?!assets/|.*\\..*).*)",
       "destination": "/index.html"
     }
   ]
