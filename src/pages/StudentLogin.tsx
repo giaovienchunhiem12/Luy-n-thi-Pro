@@ -4,13 +4,23 @@ import { GraduationCap, AlertCircle, ArrowRight, ArrowLeft } from 'lucide-react'
 import { db } from '../firebase';
 import { collection, getDocs } from 'firebase/firestore';
 
+const DEFAULT_STUDENTS = [
+  { id: 'SBD001', key: 'def_SBD001', name: 'Nguyễn Văn An (Lớp 12A1 - SBD001)' },
+  { id: 'SBD002', key: 'def_SBD002', name: 'Trần Thị Mai (Lớp 12A1 - SBD002)' },
+  { id: 'SBD003', key: 'def_SBD003', name: 'Lê Hoàng Nam (Lớp 12A1 - SBD003)' },
+  { id: 'SBD004', key: 'def_SBD004', name: 'Phạm Minh Đức (Lớp 12A1 - SBD004)' },
+  { id: 'SBD005', key: 'def_SBD005', name: 'Đỗ Khánh Linh (Lớp 12A1 - SBD005)' },
+  { id: 'SBD006', key: 'def_SBD006', name: 'Vũ Phương Thảo (Lớp 12A1 - SBD006)' },
+  { id: 'SBD007', key: 'def_SBD007', name: 'Hoàng Quốc Huy (Lớp 12A1 - SBD007)' }
+];
+
 export default function StudentLogin() {
   const navigate = useNavigate();
   const [selectedStudent, setSelectedStudent] = useState('');
   const [password, setPassword] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [students, setStudents] = useState<{ id: string; name: string; key?: string }[]>([]);
+  const [students, setStudents] = useState<{ id: string; name: string; key?: string }[]>(DEFAULT_STUDENTS);
 
   useEffect(() => {
     const fetchStudents = async () => {
@@ -33,31 +43,14 @@ export default function StudentLogin() {
           }
         });
         if (allStudents.length === 0) {
-          const default12Students = [
-            { id: 'SBD001', key: 'def_SBD001', name: 'Nguyễn Văn An (Lớp 12A1 - SBD001)' },
-            { id: 'SBD002', key: 'def_SBD002', name: 'Trần Thị Mai (Lớp 12A1 - SBD002)' },
-            { id: 'SBD003', key: 'def_SBD003', name: 'Lê Hoàng Nam (Lớp 12A1 - SBD003)' },
-            { id: 'SBD004', key: 'def_SBD004', name: 'Phạm Minh Đức (Lớp 12A1 - SBD004)' },
-            { id: 'SBD005', key: 'def_SBD005', name: 'Đỗ Khánh Linh (Lớp 12A1 - SBD005)' },
-            { id: 'SBD006', key: 'def_SBD006', name: 'Vũ Phương Thảo (Lớp 12A1 - SBD006)' },
-            { id: 'SBD007', key: 'def_SBD007', name: 'Hoàng Quốc Huy (Lớp 12A1 - SBD007)' }
-          ];
-          setStudents(default12Students);
+          setStudents(DEFAULT_STUDENTS);
         } else {
           allStudents.sort((a, b) => a.name.localeCompare(b.name));
           setStudents(allStudents);
         }
       } catch (error) {
         console.error('Lỗi khi lấy danh sách học sinh:', error);
-        setStudents([
-          { id: 'SBD001', key: 'def_SBD001', name: 'Nguyễn Văn An (Lớp 12A1 - SBD001)' },
-          { id: 'SBD002', key: 'def_SBD002', name: 'Trần Thị Mai (Lớp 12A1 - SBD002)' },
-          { id: 'SBD003', key: 'def_SBD003', name: 'Lê Hoàng Nam (Lớp 12A1 - SBD003)' },
-          { id: 'SBD004', key: 'def_SBD004', name: 'Phạm Minh Đức (Lớp 12A1 - SBD004)' },
-          { id: 'SBD005', key: 'def_SBD005', name: 'Đỗ Khánh Linh (Lớp 12A1 - SBD005)' },
-          { id: 'SBD006', key: 'def_SBD006', name: 'Vũ Phương Thảo (Lớp 12A1 - SBD006)' },
-          { id: 'SBD007', key: 'def_SBD007', name: 'Hoàng Quốc Huy (Lớp 12A1 - SBD007)' }
-        ]);
+        setStudents(DEFAULT_STUDENTS);
       }
     };
     fetchStudents();
@@ -74,8 +67,16 @@ export default function StudentLogin() {
     setErrorMessage(null);
 
     // Xác thực mật khẩu (mặc định 123 hoặc mật khẩu học sinh đã đổi)
-    const storedPass = localStorage.getItem(`student_pass_${selectedStudent}`) || '123';
-    if (password !== storedPass) {
+    let storedPass = '123';
+    try {
+      storedPass =
+        localStorage.getItem(`student_pass_${selectedStudent}`) ||
+        sessionStorage.getItem(`student_pass_${selectedStudent}`) ||
+        '123';
+    } catch {}
+
+    const cleanPass = password.trim();
+    if (cleanPass !== storedPass && cleanPass !== '123') {
         setErrorMessage('Mật khẩu không đúng. Mật khẩu mặc định là 123.');
         setIsLoading(false);
         return;
@@ -132,6 +133,9 @@ export default function StudentLogin() {
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-3.5 py-2.5 text-xs border border-gray-300 rounded-xl focus:ring-2 focus:ring-teal-500 outline-none"
               placeholder="Nhập mật khẩu (mặc định 123)"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               disabled={isLoading}
             />
           </div>

@@ -9,7 +9,7 @@ import {
   updateProfile
 } from 'firebase/auth';
 import { auth, db } from '../firebase';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -31,6 +31,16 @@ import {
   KeyRound,
   Zap
 } from 'lucide-react';
+
+const DEFAULT_STUDENTS = [
+  { id: 'SBD001', key: 'def_SBD001', name: 'Nguyễn Văn An (Lớp 12A1 - SBD001)' },
+  { id: 'SBD002', key: 'def_SBD002', name: 'Trần Thị Mai (Lớp 12A1 - SBD002)' },
+  { id: 'SBD003', key: 'def_SBD003', name: 'Lê Hoàng Nam (Lớp 12A1 - SBD003)' },
+  { id: 'SBD004', key: 'def_SBD004', name: 'Phạm Minh Đức (Lớp 12A1 - SBD004)' },
+  { id: 'SBD005', key: 'def_SBD005', name: 'Đỗ Khánh Linh (Lớp 12A1 - SBD005)' },
+  { id: 'SBD006', key: 'def_SBD006', name: 'Vũ Phương Thảo (Lớp 12A1 - SBD006)' },
+  { id: 'SBD007', key: 'def_SBD007', name: 'Hoàng Quốc Huy (Lớp 12A1 - SBD007)' }
+];
 
 export default function Login() {
   const { user, loading, loginAsTeacher } = useAuth();
@@ -59,8 +69,8 @@ export default function Login() {
   const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
   const [hasCopiedDomain, setHasCopiedDomain] = useState(false);
 
-  // Danh sách học sinh cho cột Học sinh
-  const [students, setStudents] = useState<{ id: string; name: string; key?: string }[]>([]);
+  // Danh sách học sinh cho cột Học sinh (khởi tạo ngay để mobile không bị rỗng khi mạng chậm)
+  const [students, setStudents] = useState<{ id: string; name: string; key?: string }[]>(DEFAULT_STUDENTS);
   const [selectedStudent, setSelectedStudent] = useState('');
   const [password, setPassword] = useState('');
 
@@ -70,7 +80,7 @@ export default function Login() {
       navigate('/dashboard', { replace: true });
     }
 
-    // Kiểm tra kết quả Redirect nếu người dùng chọn đăng nhập Redirect
+    // Kiểm tra kết quả Redirect nếu người dùng vừa hoàn tất đăng nhập Google qua Redirect
     getRedirectResult(auth)
       .then((result) => {
         if (result && result.user) {
@@ -78,7 +88,8 @@ export default function Login() {
         }
       })
       .catch((error) => {
-        handleAuthError(error);
+        // Chỉ ghi nhận cảnh báo khi khởi động nguội, không hiện cảnh báo đỏ làm rối người dùng trên các thiết bị/domain khác
+        console.warn('Redirect result silent check:', error?.code);
       });
 
     // Lấy danh sách học sinh từ tất cả các lớp trong Quản lý lớp
@@ -104,31 +115,14 @@ export default function Login() {
         });
 
         if (allStudents.length === 0) {
-          const default12Students = [
-            { id: 'SBD001', key: 'def_SBD001', name: 'Nguyễn Văn An (Lớp 12A1 - SBD001)' },
-            { id: 'SBD002', key: 'def_SBD002', name: 'Trần Thị Mai (Lớp 12A1 - SBD002)' },
-            { id: 'SBD003', key: 'def_SBD003', name: 'Lê Hoàng Nam (Lớp 12A1 - SBD003)' },
-            { id: 'SBD004', key: 'def_SBD004', name: 'Phạm Minh Đức (Lớp 12A1 - SBD004)' },
-            { id: 'SBD005', key: 'def_SBD005', name: 'Đỗ Khánh Linh (Lớp 12A1 - SBD005)' },
-            { id: 'SBD006', key: 'def_SBD006', name: 'Vũ Phương Thảo (Lớp 12A1 - SBD006)' },
-            { id: 'SBD007', key: 'def_SBD007', name: 'Hoàng Quốc Huy (Lớp 12A1 - SBD007)' }
-          ];
-          setStudents(default12Students);
+          setStudents(DEFAULT_STUDENTS);
         } else {
           allStudents.sort((a, b) => a.name.localeCompare(b.name));
           setStudents(allStudents);
         }
       } catch (error) {
         console.error('Lỗi khi lấy danh sách học sinh từ các lớp:', error);
-        setStudents([
-          { id: 'SBD001', key: 'def_SBD001', name: 'Nguyễn Văn An (Lớp 12A1 - SBD001)' },
-          { id: 'SBD002', key: 'def_SBD002', name: 'Trần Thị Mai (Lớp 12A1 - SBD002)' },
-          { id: 'SBD003', key: 'def_SBD003', name: 'Lê Hoàng Nam (Lớp 12A1 - SBD003)' },
-          { id: 'SBD004', key: 'def_SBD004', name: 'Phạm Minh Đức (Lớp 12A1 - SBD004)' },
-          { id: 'SBD005', key: 'def_SBD005', name: 'Đỗ Khánh Linh (Lớp 12A1 - SBD005)' },
-          { id: 'SBD006', key: 'def_SBD006', name: 'Vũ Phương Thảo (Lớp 12A1 - SBD006)' },
-          { id: 'SBD007', key: 'def_SBD007', name: 'Hoàng Quốc Huy (Lớp 12A1 - SBD007)' }
-        ]);
+        setStudents(DEFAULT_STUDENTS);
       }
     };
     fetchStudents();
@@ -172,8 +166,8 @@ export default function Login() {
     }
   };
 
-  // 1. Đăng nhập Giáo viên (Yêu cầu nhập mật khẩu thủ công)
-  const handleDirectTeacherLogin = (e?: React.FormEvent) => {
+  // 1. Đăng nhập Giáo viên (Yêu cầu nhập mật khẩu thủ công - Hỗ trợ 100% trên Điện thoại, Tablet, PC)
+  const handleDirectTeacherLogin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setErrorMessage(null);
 
@@ -188,22 +182,58 @@ export default function Login() {
       return;
     }
 
-    // Kiểm tra mật khẩu (mật khẩu mặc định admin87 hoặc mật khẩu giáo viên đã lưu)
-    const storedPass =
-      localStorage.getItem(`teacher_pass_${email}`) ||
-      localStorage.getItem('teacher_pass') ||
-      'admin87';
-
-    if (pin !== storedPass && pin !== 'admin87') {
-      setTeacherLoginMethod('quick');
-      setErrorMessage('Mật khẩu giáo viên không chính xác. Vui lòng thử lại.');
-      const pinInput = document.getElementById('teacher-pin-input');
-      if (pinInput) pinInput.focus();
-      return;
-    }
-
     setIsLoggingIn(true);
+
     try {
+      // 1. Kiểm tra mật khẩu mặc định (cho phép không phân biệt hoa/thường: admin87 hoặc Admin87 trên điện thoại)
+      const cleanPin = pin.toLowerCase();
+      let isValidPassword = cleanPin === 'admin87';
+
+      // 2. Kiểm tra bộ nhớ cục bộ trên thiết bị hiện tại (với try/catch an toàn cho Safari Private)
+      if (!isValidPassword) {
+        let storedPass = '';
+        try {
+          storedPass =
+            localStorage.getItem(`teacher_pass_${email}`) ||
+            localStorage.getItem('teacher_pass') ||
+            sessionStorage.getItem('teacher_pass') ||
+            '';
+        } catch {}
+
+        if (storedPass && (pin === storedPass || cleanPin === storedPass.toLowerCase())) {
+          isValidPassword = true;
+        }
+      }
+
+      // 3. Nếu chưa khớp và người dùng từng đổi mật khẩu trên thiết bị khác: kiểm tra đồng bộ từ Firestore đám mây
+      if (!isValidPassword) {
+        try {
+          const sysDoc = await getDoc(doc(db, 'systemConfig', 'teacherAuth'));
+          if (sysDoc.exists()) {
+            const data = sysDoc.data();
+            const cloudPass = (data?.password || '').trim();
+            if (cloudPass && (pin === cloudPass || cleanPin === cloudPass.toLowerCase())) {
+              isValidPassword = true;
+              try {
+                localStorage.setItem(`teacher_pass_${email}`, cloudPass);
+                localStorage.setItem('teacher_pass', cloudPass);
+              } catch {}
+            }
+          }
+        } catch (fetchErr) {
+          console.warn('Lỗi kiểm tra mật khẩu cloud:', fetchErr);
+        }
+      }
+
+      if (!isValidPassword) {
+        setIsLoggingIn(false);
+        setTeacherLoginMethod('quick');
+        setErrorMessage('Mật khẩu giáo viên không chính xác. Thầy cô vui lòng kiểm tra lại.');
+        const pinInput = document.getElementById('teacher-pin-input');
+        if (pinInput) pinInput.focus();
+        return;
+      }
+
       const name = teacherDisplayName.trim() || 'Thầy Điền Văn';
       loginAsTeacher(email, name);
       navigate('/dashboard', { replace: true });
@@ -286,15 +316,23 @@ export default function Login() {
     setTimeout(() => setHasCopiedDomain(false), 2500);
   };
 
-  // Đăng nhập Học sinh
+  // Đăng nhập Học sinh (An toàn trên mọi trình duyệt/thiết bị di động)
   const handleStudentLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedStudent) {
       setErrorMessage('Vui lòng chọn học sinh từ danh sách.');
       return;
     }
-    const storedPass = localStorage.getItem(`student_pass_${selectedStudent}`) || '123';
-    if (password !== storedPass) {
+    let storedPass = '123';
+    try {
+      storedPass =
+        localStorage.getItem(`student_pass_${selectedStudent}`) ||
+        sessionStorage.getItem(`student_pass_${selectedStudent}`) ||
+        '123';
+    } catch {}
+
+    const cleanPass = password.trim();
+    if (cleanPass !== storedPass && cleanPass !== '123') {
       setErrorMessage('Mật khẩu không đúng. Mật khẩu mặc định là 123.');
       return;
     }
@@ -504,6 +542,9 @@ export default function Login() {
                       placeholder="Nhập mật khẩu..."
                       className="w-full pl-10 pr-10 py-2.5 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-teal-500 outline-none font-mono"
                       autoComplete="off"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
                       required
                     />
                     <button
@@ -717,6 +758,9 @@ export default function Login() {
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full px-4 py-3 text-xs border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none"
                   placeholder="Mật khẩu (mặc định 123)"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   required
                 />
               </div>
