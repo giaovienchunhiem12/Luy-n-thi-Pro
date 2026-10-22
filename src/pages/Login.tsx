@@ -42,6 +42,17 @@ const DEFAULT_STUDENTS = [
   { id: 'SBD007', key: 'def_SBD007', name: 'Hoàng Quốc Huy (Lớp 12A1 - SBD007)' }
 ];
 
+// Hàm kiểm tra thiết bị di động (mobile/tablet hoặc màn hình nhỏ)
+export const isMobileOrTabletDevice = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const userAgent = navigator.userAgent || navigator.vendor || (window as any).opera || '';
+  const mobileRegex = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile|mobile|CriOS/i;
+  const isMobileUA = mobileRegex.test(userAgent);
+  const isSmallScreen = window.innerWidth <= 1024;
+  const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  return isMobileUA || (isSmallScreen && hasTouch) || window.innerWidth < 768;
+};
+
 export default function Login() {
   const { user, loading, loginAsTeacher } = useAuth();
   const navigate = useNavigate();
@@ -77,7 +88,7 @@ export default function Login() {
   const [selectedStudent, setSelectedStudent] = useState('');
   const [password, setPassword] = useState('');
 
-  // Điều hướng nếu đã có phiên đăng nhập hoạt động
+  // Điều hướng nếu đã có phiên đăng nhập hoạt động & nhận kết quả getRedirectResult khi khởi chạy
   useEffect(() => {
     const activeTeacher = user || safeStorage.getTeacherSession();
     if (activeTeacher) {
@@ -85,18 +96,28 @@ export default function Login() {
       return;
     }
 
-    // Kiểm tra kết quả Redirect nếu người dùng vừa hoàn tất đăng nhập Google qua Redirect
+    // Nhận kết quả đăng nhập sau khi chuyển hướng (signInWithRedirect) khi ứng dụng khởi chạy
     try {
       getRedirectResult(auth)
         .then((result) => {
           if (result && result.user) {
+            const u = result.user;
+            loginAsTeacher(u.email || 'giasudienvan@gmail.com', u.displayName || 'Thầy Điền Văn');
             navigate('/dashboard', { replace: true });
           }
         })
         .catch((error) => {
-          console.warn('Redirect result silent check:', error?.code);
+          const wasPending = sessionStorage.getItem('google_auth_pending');
+          sessionStorage.removeItem('google_auth_pending');
+          if (wasPending && error && error.code) {
+            handleAuthError(error);
+          } else {
+            console.warn('Redirect result silent check:', error?.code);
+          }
         });
-    } catch (e) {}
+    } catch (e) {
+      console.warn('Lỗi getRedirectResult:', e);
+    }
 
     // Lấy danh sách học sinh từ tất cả các lớp trong Quản lý lớp
     const fetchStudents = async () => {
@@ -250,7 +271,40 @@ export default function Login() {
     }
   };
 
-  // 2. Đăng nhập Google qua Popup
+  // 2. Hàm xử lý đăng nhập Google (Google Auth):
+  // - Nếu người dùng đang truy cập trên thiết bị di động (mobile/tablet hoặc màn hình nhỏ): sử dụng signInWithRedirect(auth, provider)
+  // - Ngược lại trên máy tính desktop: sử dụng signInWithPopup(auth, provider)
+  const handleGoogleLogin = async () => {
+    setErrorMessage(null);
+    setInfoMessage(null);
+    setUnauthorizedDomain(null);
+    setIsLoggingIn(true);
+
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+
+      if (isMobileOrTabletDevice()) {
+        // Thiết bị di động (mobile/tablet/màn hình nhỏ): sử dụng signInWithRedirect
+        sessionStorage.setItem('google_auth_pending', 'true');
+        await signInWithRedirect(auth, provider);
+      } else {
+        // Máy tính desktop: sử dụng signInWithPopup
+        const result = await signInWithPopup(auth, provider);
+        if (result && result.user) {
+          const u = result.user;
+          loginAsTeacher(u.email || 'giasudienvan@gmail.com', u.displayName || 'Thầy Điền Văn');
+          navigate('/dashboard', { replace: true });
+        }
+      }
+    } catch (error: any) {
+      handleAuthError(error);
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // Đăng nhập Google qua Popup (dành riêng cho desktop khi cần)
   const loginWithGooglePopup = async () => {
     setErrorMessage(null);
     setInfoMessage(null);
@@ -261,6 +315,8 @@ export default function Login() {
       provider.setCustomParameters({ prompt: 'select_account' });
       const result = await signInWithPopup(auth, provider);
       if (result && result.user) {
+        const u = result.user;
+        loginAsTeacher(u.email || 'giasudienvan@gmail.com', u.displayName || 'Thầy Điền Văn');
         navigate('/dashboard', { replace: true });
       }
     } catch (error: any) {
@@ -270,14 +326,16 @@ export default function Login() {
     }
   };
 
-  // 3. Đăng nhập Google qua Redirect
+  // Đăng nhập Google qua Redirect (dành cho thiết bị di động hoặc khi popup bị chặn)
   const loginWithGoogleRedirect = async () => {
     setErrorMessage(null);
     setInfoMessage(null);
     setUnauthorizedDomain(null);
     setIsLoggingIn(true);
     try {
+      sessionStorage.setItem('google_auth_pending', 'true');
       const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
       await signInWithRedirect(auth, provider);
     } catch (error: any) {
       handleAuthError(error);
@@ -618,7 +676,7 @@ export default function Login() {
               <div className="space-y-3 pt-1">
                 <button
                   type="button"
-                  onClick={loginWithGooglePopup}
+                  onClick={handleGoogleLogin}
                   disabled={isLoggingIn}
                   className="w-full flex items-center justify-center gap-3 px-4 py-3.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-sm font-semibold transition-all shadow-sm cursor-pointer disabled:opacity-70"
                 >
@@ -643,15 +701,9 @@ export default function Login() {
                   <span>{isLoggingIn ? 'Đang kết nối Google...' : 'Đăng nhập với Google'}</span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={loginWithGoogleRedirect}
-                  disabled={isLoggingIn}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2 text-xs text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Nếu popup bị chặn: Đăng nhập dạng Chuyển trang (Redirect)</span>
-                </button>
+                <p className="text-[11px] text-slate-500 text-center">
+                  💡 Hệ thống tự động dùng <span className="font-semibold text-teal-700">Redirect</span> trên điện thoại/tablet và <span className="font-semibold text-teal-700">Popup</span> trên máy tính.
+                </p>
 
                 {/* Nút thoát hiểm nhanh khi Google gặp sự cố */}
                 <div className="pt-2 border-t border-slate-100">
@@ -661,7 +713,7 @@ export default function Login() {
                     className="w-full py-2.5 px-3 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
                   >
                     <Zap className="w-3.5 h-3.5 text-teal-600" />
-                    <span>Vào ngay với tư cách Thầy Điền Văn (Không cần Google)</span>
+                    <span>Vào ngay bằng Mật khẩu Thầy Điền Văn (Không cần Google)</span>
                   </button>
                 </div>
               </div>
