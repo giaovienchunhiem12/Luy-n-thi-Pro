@@ -92,7 +92,7 @@ export default function Login() {
   useEffect(() => {
     const activeTeacher = user || safeStorage.getTeacherSession();
     if (activeTeacher) {
-      navigate('/dashboard', { replace: true });
+      window.location.href = '/dashboard';
       return;
     }
 
@@ -103,7 +103,7 @@ export default function Login() {
           if (result && result.user) {
             const u = result.user;
             loginAsTeacher(u.email || 'giasudienvan@gmail.com', u.displayName || 'Thầy Điền Văn');
-            navigate('/dashboard', { replace: true });
+            window.location.href = '/dashboard';
           }
         })
         .catch((error) => {
@@ -248,7 +248,7 @@ export default function Login() {
     try {
       const name = teacherDisplayName.trim() || 'Thầy Điền Văn';
       loginAsTeacher(email, name);
-      navigate('/dashboard', { replace: true });
+      window.location.href = '/dashboard';
     } catch (err: any) {
       setErrorMessage('Không thể đăng nhập giáo viên: ' + (err?.message || 'Lỗi không xác định'));
       setIsLoggingIn(false);
@@ -278,7 +278,7 @@ export default function Login() {
         if (result && result.user) {
           const u = result.user;
           loginAsTeacher(u.email || 'giasudienvan@gmail.com', u.displayName || 'Thầy Điền Văn');
-          navigate('/dashboard', { replace: true });
+          window.location.href = '/dashboard';
         }
       }
     } catch (error: any) {
@@ -301,7 +301,7 @@ export default function Login() {
       if (result && result.user) {
         const u = result.user;
         loginAsTeacher(u.email || 'giasudienvan@gmail.com', u.displayName || 'Thầy Điền Văn');
-        navigate('/dashboard', { replace: true });
+        window.location.href = '/dashboard';
       }
     } catch (error: any) {
       handleAuthError(error);
@@ -345,10 +345,10 @@ export default function Login() {
           await updateProfile(userCred.user, { displayName: teacherDisplayName.trim() });
         }
         setInfoMessage('Đăng ký tài khoản giáo viên thành công! Đang chuyển hướng...');
-        navigate('/dashboard', { replace: true });
+        window.location.href = '/dashboard';
       } else {
         await signInWithEmailAndPassword(auth, teacherEmail.trim(), teacherPassword);
-        navigate('/dashboard', { replace: true });
+        window.location.href = '/dashboard';
       }
     } catch (error: any) {
       handleAuthError(error);
@@ -386,7 +386,7 @@ export default function Login() {
       return;
     }
     setErrorMessage(null);
-    navigate(`/student-dashboard?studentId=${encodeURIComponent(selectedStudent)}`);
+    window.location.href = `/student-dashboard?studentId=${encodeURIComponent(selectedStudent)}`;
   };
 
   return (
