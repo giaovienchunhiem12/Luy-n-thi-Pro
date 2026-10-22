@@ -9,7 +9,8 @@ import firebaseConfigData from "../firebase-applet-config.json";
 
 const firebaseConfig = {
   apiKey: (firebaseConfigData as any).apiKey,
-  authDomain: (firebaseConfigData as any).authDomain,
+  // Cấu hình authDomain chính xác theo domain Vercel/hiện tại để tránh bị Safari chặn cookie
+  authDomain: typeof window !== 'undefined' && window.location.host ? window.location.host : ((firebaseConfigData as any).authDomain || "luyenthipro-tau.vercel.app"),
   projectId: (firebaseConfigData as any).projectId,
   storageBucket: (firebaseConfigData as any).storageBucket,
   messagingSenderId: (firebaseConfigData as any).messagingSenderId,
