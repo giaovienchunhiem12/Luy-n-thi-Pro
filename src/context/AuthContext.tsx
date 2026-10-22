@@ -118,7 +118,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async () => {
     safeStorage.clearTeacherSession();
     try {
-      await firebaseSignOut(auth);
+      if (auth) {
+        await firebaseSignOut(auth);
+      }
     } catch (e) {
       console.warn('Lỗi khi đăng xuất Firebase Auth:', e);
     }
@@ -140,7 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }, 1200);
 
     // 3. Lắng nghe trạng thái Firebase Authentication (Google / Email)
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+    const unsubscribe = auth ? onAuthStateChanged(auth, (currentUser) => {
       clearTimeout(fallbackTimer);
       if (currentUser) {
         setUser(currentUser);
@@ -153,7 +155,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       }
       setLoading(false);
-    });
+    }) : () => {};
 
     return () => {
       clearTimeout(fallbackTimer);
