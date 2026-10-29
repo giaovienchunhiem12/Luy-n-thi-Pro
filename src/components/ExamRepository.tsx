@@ -66,6 +66,7 @@ export interface ExamItem {
   questions?: {
     imageUrl?: string;
     questionText: string;
+    questionTextAfter?: string;
     options: string[];
     correctAnswer: string;
     section: string;
@@ -301,56 +302,27 @@ export default function ExamRepository() {
   const extractRawTextFromFile = async (file: File): Promise<string> => {
     const arrayBuffer = await file.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
+    const fileNameLower = (file.name || '').toLowerCase();
 
-    // 1. Kiểm tra chữ ký ZIP (.docx là file zip nén, bắt đầu bằng 2 byte 'PK' [0x50, 0x4B])
-    const isZip = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B;
-
-    if (isZip) {
-      // 1.1 Sử dụng parseWordFile (Mammoth + cấu hình bắt ảnh công thức sang base64)
-      try {
-        const htmlVal = await parseWordFile(arrayBuffer);
-        if (htmlVal && htmlVal.trim()) {
-          const preservedText = extractTextFromHtmlPreservingUnderline(htmlVal);
-          if (preservedText.trim()) {
-            return preservedText;
-          }
+    // 1. Kiểm tra chữ ký file PDF (%PDF- : 0x25, 0x50, 0x44, 0x46) hoặc đuôi .pdf TRƯỚC TIÊN
+    // Tuyệt đối không giải mã UTF-8/HTML trên luồng byte nhị phân của PDF (tránh khớp nhầm '<p ' sinh ra ký tự rác nhị phân)
+    let isPdf = fileNameLower.endsWith('.pdf') || file.type === 'application/pdf';
+    if (!isPdf && bytes.length >= 4) {
+      // Kiểm tra %PDF trong 1024 byte đầu tiên (một số file PDF có header offset nhỏ)
+      const checkLen = Math.min(bytes.length - 4, 1024);
+      for (let i = 0; i <= checkLen; i++) {
+        if (bytes[i] === 0x25 && bytes[i + 1] === 0x50 && bytes[i + 2] === 0x44 && bytes[i + 3] === 0x46) {
+          isPdf = true;
+          break;
         }
-      } catch (zipErr: any) {
-        console.warn('Không thể chuyển đổi html từ file docx qua parseWordFile:', zipErr?.message);
-      }
-
-      // 1.2 Thử trích xuất thô qua Mammoth nếu convertToHtml không thành công
-      try {
-        // @ts-ignore
-        const rawResult = await mammoth.extractRawText({ arrayBuffer });
-        const val = (rawResult && rawResult.value) || '';
-        if (val.trim()) {
-          return sanitizeMathContent(val);
-        }
-      } catch (e) {
-        console.warn('Không thể trích xuất raw text từ file docx:', e);
       }
     }
 
-    // 2. Thử giải mã dạng chuỗi văn bản (UTF-8)
-    const decodedText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-
-    // Kiểm tra định dạng HTML / Word web archive (như file mẫu tải về hoặc file lưu dạng HTML .doc)
-    const hasHtmlTags = /<html|<body|<p[\s>]|<div[\s>]|xmlns:w|xmlns:o/i.test(decodedText);
-    if (hasHtmlTags) {
-      const extractedHtml = extractTextFromHtmlPreservingUnderline(decodedText);
-      if (extractedHtml.trim()) {
-        return extractedHtml;
-      }
-    }
-
-    // 3. Nếu là file PDF (%PDF-)
-    const isPdf = bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
     if (isPdf) {
       try {
         const text = await parsePdfFileToText(arrayBuffer);
         if (text && text.trim().length > 5) {
-          return text;
+          return text.normalize('NFC');
         } else {
           console.warn('PDF extracted text is too short:', text);
         }
@@ -360,16 +332,64 @@ export default function ExamRepository() {
       throw new Error('FILE_PDF_UNREADABLE');
     }
 
-    // 4. Nếu là file Word nhị phân cũ .doc (OLE2 CFBF: 0xD0, 0xCF, 0x11, 0xE0)
+    // 2. Kiểm tra chữ ký ZIP (.docx là file zip nén, bắt đầu bằng 2 byte 'PK' [0x50, 0x4B])
+    const isZip = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4B;
+
+    if (isZip) {
+      // 2.1 Sử dụng parseWordFile (Mammoth + cấu hình bắt ảnh công thức sang base64)
+      try {
+        const htmlVal = await parseWordFile(arrayBuffer);
+        if (htmlVal && htmlVal.trim()) {
+          const preservedText = extractTextFromHtmlPreservingUnderline(htmlVal);
+          if (preservedText.trim()) {
+            return preservedText.normalize('NFC');
+          }
+        }
+      } catch (zipErr: any) {
+        console.warn('Không thể chuyển đổi html từ file docx qua parseWordFile:', zipErr?.message);
+      }
+
+      // 2.2 Thử trích xuất thô qua Mammoth nếu convertToHtml không thành công
+      try {
+        // @ts-ignore
+        const rawResult = await mammoth.extractRawText({ arrayBuffer });
+        const val = (rawResult && rawResult.value) || '';
+        if (val.trim()) {
+          return sanitizeMathContent(val.normalize('NFC'));
+        }
+      } catch (e) {
+        console.warn('Không thể trích xuất raw text từ file docx:', e);
+      }
+    }
+
+    // 3. Nếu là file Word nhị phân cũ .doc (OLE2 CFBF: 0xD0, 0xCF, 0x11, 0xE0)
     const isBinaryDoc = bytes.length >= 8 && bytes[0] === 0xD0 && bytes[1] === 0xCF && bytes[2] === 0x11 && bytes[3] === 0xE0;
     if (isBinaryDoc) {
-      const utf16 = new TextDecoder('utf-16le', { fatal: false }).decode(bytes);
+      const utf16 = new TextDecoder('utf-16le', { fatal: false }).decode(bytes).normalize('NFC');
       const m16 = utf16.match(/[\p{L}\p{N}\s.,;:!?()\-+/><=]{5,}/gu) || [];
       const joined16 = m16.join(' ');
       if (/(?:câu|bài|phần|đáp\s*án)/i.test(joined16)) {
         return joined16;
       }
       throw new Error('FILE_BINARY_DOC_LEGACY');
+    }
+
+    // 4. Giải mã dạng chuỗi văn bản (UTF-8) cho file .doc dạng HTML hoặc .txt
+    const decodedText = new TextDecoder('utf-8', { fatal: false }).decode(bytes).normalize('NFC');
+
+    // Kiểm tra xem có phải dữ liệu nhị phân rác hay không (chứa nhiều ký tự điều khiển hoặc replacement char \uFFFD)
+    const binaryGarbageCount = (decodedText.match(/[\uFFFD\x00-\x08\x0E-\x1F]/g) || []).length;
+    if (decodedText.length > 0 && binaryGarbageCount / decodedText.length > 0.05) {
+      throw new Error('FILE_UNSUPPORTED_OR_EMPTY');
+    }
+
+    // Kiểm tra định dạng HTML / Word web archive (như file mẫu tải về hoặc file lưu dạng HTML .doc)
+    const hasHtmlTags = /<!DOCTYPE\s+html|<html[\s>]|<body[\s>]|xmlns:w=|xmlns:o=|<p\s+class=|<div\s+class=/i.test(decodedText);
+    if (hasHtmlTags) {
+      const extractedHtml = extractTextFromHtmlPreservingUnderline(decodedText);
+      if (extractedHtml.trim()) {
+        return extractedHtml.normalize('NFC');
+      }
     }
 
     // 5. Nếu là file văn bản thuần (.txt)
@@ -399,7 +419,9 @@ export default function ExamRepository() {
     try {
       let text = await extractRawTextFromFile(selectedFile);
       text = text
+        .normalize('NFC')
         .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
         .replace(/[\u00A0\u1680\u180e\u2000-\u200b\u202f\u205f\u3000\ufeff]/g, ' ')
         .replace(/\t/g, ' ');
 
@@ -411,103 +433,274 @@ export default function ExamRepository() {
         return;
       }
 
-      // Chuẩn hóa ký tự số La Mã Unicode thành chữ cái ASCII thông thường
+      // Chuẩn hóa ký tự số La Mã Unicode, khoảng cách chữ và loại bỏ các dòng hướng dẫn phần bị ngắt dòng
       text = text
+        .normalize('NFC')
         .replace(/[Ⅰⅰ]/g, 'I')
         .replace(/[Ⅱⅱ]/g, 'II')
-        .replace(/[Ⅲⅲ]/g, 'III');
+        .replace(/[Ⅲⅲ]/g, 'III')
+        .replace(/(?:^|\n)\s*P\s*H\s*[ẦAÀ]\s*N(?=\s*(?:I{1,3}\b|[123]\b))/gi, '\nPHẦN')
+        .replace(/(?:^|\n)\s*PHẦN\s+I\s+I\s+I\b/gi, '\nPHẦN III')
+        .replace(/(?:^|\n)\s*PHẦN\s+I\s+I\b/gi, '\nPHẦN II')
+        .replace(/\(?\s*Thí\s*sinh\s*trả\s*lời\s*từ\s*câu\s*\d+[\s\r\n]+đến\s*[\s\r\n]*câu\s*\d+[^\n.]*\.?\s*\)?/gi, '')
+        .replace(/\(?\s*Mỗi\s*câu\s*hỏi\s*thí\s*sinh\s*chỉ\s*chọn\s*[\s\r\n]*một\s*phương\s*án[^\n.]*\.?\s*\)?/gi, '')
+        .replace(/\(?\s*Trong\s*mỗi\s*ý\s*a\s*[\.\)]?\s*,\s*b\s*[\.\)]?\s*,\s*c\s*[\.\)]?\s*,\s*d\s*[\.\)]?[\s\r\n]*ở\s*mỗi\s*câu[^\n.]*\.?\s*\)?/gi, '')
+        .replace(/(?:^|\n)\s*C\s*â\s*u\s*(?=\d+)/g, '\nCâu ')
+        .replace(/(?:^|\n)\s*C\s*Â\s*U\s*(?=\d+)/g, '\nCÂU ')
+        // Đảm bảo nếu 'Câu X.' bị dính trên cùng 1 dòng ngay sau phương án của câu trước thì tách xuống dòng mới
+        // Nhưng KHÔNG tách các cụm hướng dẫn như "từ câu 1 đến câu 18"
+        .replace(/(?<![tT]ừ\s|[đĐ]ến\s|[tT]ới\s|[ởỞ]\s|[tT]heo\s|[nN]hư\s)(?<=[.?!\)]|\s{2,})((?:Câu|CAU|Bài|BÀI)\s*\d+\s*(?:[\.\:\)]|\s*\[))/g, '\n$1');
 
-      // 1. Phân chia ranh giới 3 phần dựa vào các tiêu đề lớn:
-      // Tự động nhận diện linh hoạt: 'Phần 1', 'Phần I', 'Phần 2', 'Phần II', 'Phần 3', 'Phần III'
-      // Không phân biệt chữ hoa/thường, có hoặc không có dấu chấm, hai chấm, gạch ngang, ngoặc đơn
-      const p1Regex = /(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:I(?![IVX\w])|1\b|THỨ\s*NHẤT)[\.\:\-\s\)]*/gi;
-      const p2Regex = /(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:II(?![IVX\w])|2\b|THỨ\s*HAI)[\.\:\-\s\)]*/gi;
-      const p3Regex = /(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:III(?![IVX\w])|3\b|THỨ\s*BA)[\.\:\-\s\)]*/gi;
+      // Loại bỏ triệt để các dòng chân tiêu đề / header / footer / số trang / dòng hướng dẫn phụ nằm trong văn bản
+      text = text
+        .split('\n')
+        .map(line =>
+          line
+            .replace(/\s*[-–—|]*\s*\b(?:Trang|Page)\s+\d+\s*(?:\/|trên|of)\s*\d+(?:\s*[-–—|]*\s*Mã\s*đề(?:\s*thi)?\s*[:.]?\s*\d+)?\s*$/i, '')
+            .replace(/\s*\(?\s*Thí\s*sinh\s*trả\s*lời\s*từ\s*câu\s*\d+\s*đến\s*câu\s*\d+[^)]*\)?/gi, '')
+            .replace(/\s*\(?\s*Mỗi\s*câu\s*hỏi\s*thí\s*sinh\s*chỉ\s*chọn\s*một\s*phương\s*án\.?\s*\)?/gi, '')
+            .replace(/\s*\(?\s*Trong\s*mỗi\s*ý\s*a\s*[\.\)]?\s*,\s*b\s*[\.\)]?\s*,\s*c\s*[\.\)]?\s*,\s*d\s*[\.\)]?\s*ở\s*mỗi\s*câu[^)]*\)?/gi, '')
+        )
+        .filter(line => {
+          const trimmed = line.trim();
+          if (!trimmed) return true;
+          if (/^[-–—_=*~•·.\s]{3,}$/.test(trimmed)) return false;
+          if (/^(?:[-–—_\s•*|]*)(?:Trang|Page)\s*\d+(?:\s*(?:\/|trên|of|\-)\s*\d+)?(?:\s*[-–—|.,;]*\s*(?:Mã\s*đề(?:\s*thi)?\s*[:.]?\s*\d+)?)?(?:[-–—_\s•*|]*)$/i.test(trimmed)) return false;
+          if (/^(?:[-–—_\s•*|]*)(?:Mã\s*đề(?:\s*thi)?\s*[:.]?\s*\d+)(?:\s*[-–—|.,;]*\s*(?:Trang|Page)\s*\d+(?:\s*\/\s*\d+)?)?(?:[-–—_\s•*|]*)$/i.test(trimmed)) return false;
+          if (/^(?:SỞ\s+GIÁO\s+DỤC|SỞ\s+GD\s*&\s*ĐT|TRƯỜNG\s+THPT|TRƯỜNG\s+THCS|PHÒNG\s+GD|BỘ\s+GIÁO\s+DỤC|ĐỀ\s+CHÍNH\s+THỨC|ĐỀ\s+THAM\s+KHẢO|ĐỀ\s+MINH\s+HỌA|KỲ\s+THI\s+TỐT\s+NGHIỆP|ĐỀ\s+KIỂM\s+TRA|ĐỀ\s+THI\s+THỬ)\b/i.test(trimmed)) return false;
+          if (/^(?:Họ\s*(?:và\s*)?tên\s*(?:thí\s*sinh|học\s*sinh)?\s*[:.]|Số\s*báo\s*danh\s*[:.]|Thời\s*gian\s*làm\s*bài\s*[:.]|\(?\s*Đề\s*(?:thi\s*)?(?:gồm\s*)?có\s*\d+\s*trang|\(?\s*Không\s*kể\s*thời\s*gian\s*phát\s*đề)/i.test(trimmed)) return false;
+          if (/^\(?\s*(?:Thí\s*sinh\s*trả\s*lời\s*từ\s*câu|Mỗi\s*câu\s*hỏi\s*thí\s*sinh\s*chỉ\s*chọn|Trong\s*mỗi\s*ý\s*a\s*[\.\)]?)/i.test(trimmed)) return false;
+          return true;
+        })
+        .join('\n');
 
-      // Các tiêu đề bổ sung trong trường hợp file không ghi chữ "Phần" mà chỉ ghi loại câu hỏi
-      const p1AltRegex = /(?:^|[\r\n\s]|<[^>]+>)(?:CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*NHIỀU\s*LỰA\s*CHỌN|TRẮC\s*NGHIỆM\s*NHIỀU\s*PHƯƠNG\s*ÁN|TRẮC\s*NGHIỆM\s*4\s*LỰA\s*CHỌN)/gi;
-      const p2AltRegex = /(?:^|[\r\n\s]|<[^>]+>)(?:CÂU\s*TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI|CÂU\s*HỎI\s*ĐÚNG\s*SAI|TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI)/gi;
-      const p3AltRegex = /(?:^|[\r\n\s]|<[^>]+>)(?:CÂU\s*TRẮC\s*NGHIỆM\s*TRẢ\s*LỜI\s*NGẮN|CÂU\s*HỎI\s*TRẢ\s*LỜI\s*NGẮN|TRẢ\s*LỜI\s*NGẮN)/gi;
+      // Biểu thức regex nhận diện từ khóa Lời giải tuyệt đối chuẩn xác
+      const robustSolutionRegex = /(?<=^|[\r\n\s]|<[^>]+>)(?:\[?\s*(?:L\s*ờ\s*i\s*g\s*i\s*ả\s*i|B\s*à\s*i\s*g\s*i\s*ả\s*i|H\s*ư\s*ớ\s*n\s*g\s*d\s*ẫ\s*n\s*g\s*i\s*ả\s*i|G\s*i\s*ả\s*i\s*c\s*h\s*i\s*t\s*i\s*ế\s*t|HD\s*giải|HDG|H\s*ư\s*ớ\s*n\s*g\s*d\s*ẫ\s*n)\s*\]?[\:\.\-]?|Giải\s*[\:\.\-])\s*/i;
 
-      const findBestSectionMatch = (regexList: RegExp[], fullText: string): number => {
+      // 1. Phân chia ranh giới 3 phần dựa vào các tiêu đề lớn (Phần I, Phần II, Phần III):
+      // Yêu cầu tiêu đề phần nằm ở đầu dòng (hoặc sau thẻ HTML) để không bắt nhầm chữ "phần" trong câu văn
+      const p1Regex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*(?:I(?![IVX\w])|1\b|MỘT\b|THỨ\s*NHẤT)|I\s*[\.\:\)]\s*(?=CÂU\s*TRẮC\s*NGHIỆM|CÂU\s*HỎI|TRẮC\s*NGHIỆM|PHẦN))[\.\:\-\s\)]*/gi;
+      const p2Regex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*(?:II(?![IVX\w])|2\b|HAI\b|THỨ\s*HAI)|II\s*[\.\:\)]\s*(?=CÂU\s*TRẮC\s*NGHIỆM|CÂU\s*HỎI|TRẮC\s*NGHIỆM|ĐÚNG\s*SAI|PHẦN))[\.\:\-\s\)]*/gi;
+      const p3Regex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*(?:III(?![IVX\w])|3\b|BA\b|THỨ\s*BA)|III\s*[\.\:\)]\s*(?=CÂU\s*TRẮC\s*NGHIỆM|CÂU\s*HỎI|TRẮC\s*NGHIỆM|TRẢ\s*LỜI\s*NGẮN|PHẦN))[\.\:\-\s\)]*/gi;
+
+      // Các tiêu đề bổ sung trong trường hợp file không ghi số La Mã hoặc chỉ ghi loại câu hỏi ở đầu dòng
+      const p1AltRegex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*[I123]*[\.\:\-\s]*)?(?:CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*NHIỀU\s*(?:PHƯƠNG\s*ÁN\s*)?LỰA\s*CHỌN|CÂU\s*TRẮC\s*NGHIỆM\s*NHIỀU\s*PHƯƠNG\s*ÁN|TRẮC\s*NGHIỆM\s*NHIỀU\s*PHƯƠNG\s*ÁN|TRẮC\s*NGHIỆM\s*4\s*LỰA\s*CHỌN)/gi;
+      const p2AltRegex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*[I123]*[\.\:\-\s]*)?(?:CÂU\s*TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI|CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI|CÂU\s*HỎI\s*ĐÚNG\s*SAI|TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI)/gi;
+      const p3AltRegex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*[I123]*[\.\:\-\s]*)?(?:CÂU\s*TRẮC\s*NGHIỆM\s*(?:YÊU\s*CẦU\s*)?TRẢ\s*LỜI\s*NGẮN|CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*TRẢ\s*LỜI\s*NGẮN|CÂU\s*HỎI\s*TRẢ\s*LỜI\s*NGẮN|TRẮC\s*NGHIỆM\s*TRẢ\s*LỜI\s*NGẮN)/gi;
+
+      const findValidSectionMatches = (regexList: RegExp[], fullText: string): number[] => {
+        const indices: number[] = [];
         for (const rgx of regexList) {
           const all = Array.from(fullText.matchAll(rgx));
-          if (all.length === 0) continue;
-          if (all.length === 1) {
-            const m = all[0];
-            const leading = m[0].match(/^[\r\n\s]+/);
-            return (m.index || 0) + (leading ? leading[0].length : 0);
-          }
-          // Khi có nhiều kết quả (ví dụ xuất hiện ở phần giới thiệu đầu trang "Đề thi gồm 3 phần: Phần 1, Phần 2, Phần 3")
-          // Loại bỏ các vị trí giới thiệu tóm tắt bằng cách tìm vị trí thực sự có nội dung câu hỏi phía sau
           for (const m of all) {
             const idx = m.index || 0;
-            const snippet = fullText.substring(Math.max(0, idx - 100), idx + 200);
-            const isSummaryHeader = /(?:gồm|cấu trúc|thời gian làm bài)[\s\S]{0,100}(?:Phần\s*[123I]+)/i.test(snippet);
+            const before = fullText.substring(Math.max(0, idx - 80), idx);
+            const after = fullText.substring(idx, Math.min(fullText.length, idx + 220));
+            // Loại bỏ dòng giới thiệu chung như "Đề thi gồm 3 phần: Phần I, Phần II, Phần III"
+            const isSummaryHeader = /(?:gồm\s*có|đề\s*thi\s*gồm|cấu\s*trúc\s*đề)/i.test(before + after) &&
+              /Phần\s*(?:I|1)[\s\S]{0,60}Phần\s*(?:II|2)/i.test(before + after);
             if (!isSummaryHeader) {
               const leading = m[0].match(/^[\r\n\s]+/);
-              return idx + (leading ? leading[0].length : 0);
+              const pos = idx + (leading ? leading[0].length : 0);
+              if (!indices.some(existing => Math.abs(existing - pos) < 15)) {
+                indices.push(pos);
+              }
             }
           }
-          const lastM = all[all.length - 1];
-          const leading = lastM[0].match(/^[\r\n\s]+/);
-          return (lastM.index || 0) + (leading ? leading[0].length : 0);
+          if (indices.length > 0) break;
         }
-        return -1;
+        return indices.sort((a, b) => a - b);
       };
 
-      const idx1 = findBestSectionMatch([p1Regex, p1AltRegex], text);
-      const idx2 = findBestSectionMatch([p2Regex, p2AltRegex], text);
-      const idx3 = findBestSectionMatch([p3Regex, p3AltRegex], text);
+      // Tách phần thân đề thi và phần BẢNG ĐÁP ÁN / HƯỚNG DẪN GIẢI CHI TIẾT ở cuối file (nếu có)
+      let examBodyText = text;
+      let trailingAnswerSection = '';
+
+      const p1MatchesAll = findValidSectionMatches([p1Regex, p1AltRegex], text);
+      const p2MatchesAll = findValidSectionMatches([p2Regex, p2AltRegex], text);
+      const p3MatchesAll = findValidSectionMatches([p3Regex, p3AltRegex], text);
+
+      const firstP1 = p1MatchesAll.length > 0 ? p1MatchesAll[0] : -1;
+      const firstP2 = p2MatchesAll.find(i => i > firstP1) ?? (p2MatchesAll[0] ?? -1);
+      const firstP3 = p3MatchesAll.find(i => i > Math.max(firstP1, firstP2)) ?? (p3MatchesAll[0] ?? -1);
+
+      const lastSectionStart = Math.max(firstP1, firstP2, firstP3, 0);
+      if (lastSectionStart > 0) {
+        const afterLastSection = text.substring(lastSectionStart + 20);
+        // Tìm dấu hiệu kết thúc đề thi ("--- HẾT ---", "BẢNG ĐÁP ÁN", "ĐÁP ÁN VÀ HƯỚNG DẪN GIẢI")
+        const endMarkerRegex = /(?:^|\n)\s*(?:-+\s*H\s*Ế\s*T\s*-+|H\s*Ế\s*T\s*(?:\n|$)|BẢNG\s*ĐÁP\s*ÁN|ĐÁP\s*ÁN\s*(?:VÀ\s*)?(?:HƯỚNG\s*DẪN|LỜI\s*GIẢI)|HƯỚNG\s*DẪN\s*GIẢI\s*CHI\s*TIẾT|LỜI\s*GIẢI\s*CHI\s*TIẾT)/i;
+        const endM = afterLastSection.match(endMarkerRegex);
+        if (endM && endM.index !== undefined) {
+          const cutIndex = lastSectionStart + 20 + endM.index;
+          examBodyText = text.substring(0, cutIndex).trim();
+          trailingAnswerSection = text.substring(cutIndex).trim();
+        }
+      }
+
+      // Bóc tách bảng đáp án cho Phần I (1A 2B...) từ trailingAnswerSection (nếu có)
+      const p1AnswerKeyMap: Record<number, string> = {};
+      if (trailingAnswerSection) {
+        const directPairs = Array.from(trailingAnswerSection.matchAll(/(?:Câu\s*)?(\d{1,2})\s*[\.\:\-\)]?\s*\b([A-D])\b/g));
+        directPairs.forEach(m => {
+          const qNum = parseInt(m[1], 10);
+          if (qNum >= 1 && qNum <= 50 && !p1AnswerKeyMap[qNum]) {
+            p1AnswerKeyMap[qNum] = m[2].toUpperCase();
+          }
+        });
+      }
+
+      const idx1 = firstP1 !== -1 && firstP1 < examBodyText.length ? firstP1 : -1;
+      const idx2 = firstP2 !== -1 && firstP2 < examBodyText.length ? firstP2 : -1;
+      const idx3 = firstP3 !== -1 && firstP3 < examBodyText.length ? firstP3 : -1;
 
       let rawP1 = '';
       let rawP2 = '';
       let rawP3 = '';
 
       if (idx1 !== -1 && idx2 !== -1 && idx3 !== -1 && idx1 < idx2 && idx2 < idx3) {
-        rawP1 = text.substring(idx1, idx2);
-        rawP2 = text.substring(idx2, idx3);
-        rawP3 = text.substring(idx3);
+        rawP1 = examBodyText.substring(idx1, idx2);
+        rawP2 = examBodyText.substring(idx2, idx3);
+        rawP3 = examBodyText.substring(idx3);
       } else if (idx1 !== -1 && idx2 !== -1 && idx1 < idx2) {
-        rawP1 = text.substring(idx1, idx2);
-        rawP2 = text.substring(idx2);
+        rawP1 = examBodyText.substring(idx1, idx2);
+        rawP2 = examBodyText.substring(idx2);
       } else if (idx2 !== -1 && idx3 !== -1 && idx2 < idx3) {
-        rawP1 = text.substring(0, idx2);
-        rawP2 = text.substring(idx2, idx3);
-        rawP3 = text.substring(idx3);
+        rawP1 = examBodyText.substring(0, idx2);
+        rawP2 = examBodyText.substring(idx2, idx3);
+        rawP3 = examBodyText.substring(idx3);
       } else if (idx1 !== -1 && idx3 !== -1 && idx1 < idx3) {
-        rawP1 = text.substring(idx1, idx3);
-        rawP3 = text.substring(idx3);
+        rawP1 = examBodyText.substring(idx1, idx3);
+        rawP3 = examBodyText.substring(idx3);
       } else if (idx2 !== -1) {
-        rawP1 = text.substring(0, idx2);
-        rawP2 = text.substring(idx2);
+        rawP1 = examBodyText.substring(0, idx2);
+        rawP2 = examBodyText.substring(idx2);
       } else if (idx3 !== -1) {
-        rawP1 = text.substring(0, idx3);
-        rawP3 = text.substring(idx3);
+        rawP1 = examBodyText.substring(0, idx3);
+        rawP3 = examBodyText.substring(idx3);
       } else {
-        rawP1 = text;
+        rawP1 = examBodyText;
       }
 
-      // Biểu thức regex nhận diện từ khóa Lời giải tuyệt đối chuẩn xác
-      // Không để bị nuốt nhầm "Giải phương trình", "khi giải...", và hỗ trợ giãn chữ như "L ờ i gi ả i:"
-      const robustSolutionRegex = /(?<=^|[\r\n\s]|<[^>]+>)(?:\[?\s*(?:L\s*ờ\s*i\s*g\s*i\s*ả\s*i|B\s*à\s*i\s*g\s*i\s*ả\s*i|H\s*ư\s*ớ\s*n\s*g\s*d\s*ẫ\s*n\s*g\s*i\s*ả\s*i|G\s*i\s*ả\s*i\s*c\s*h\s*i\s*t\s*i\s*ế\s*t|HD\s*giải|HDG|H\s*ư\s*ớ\s*n\s*g\s*d\s*ẫ\s*n)\s*\]?[\:\.\-]?|Giải\s*[\:\.\-])\s*/i;
+      // Hàm loại bỏ dòng tiêu đề Phần I/II/III và dòng chân tiêu đề hướng dẫn ("Thí sinh trả lời từ câu 1 đến câu 18...") ở đầu mỗi phần
+      const stripSectionHeaderAndInstructions = (secText: string): string => {
+        if (!secText.trim()) return '';
+        let cleaned = secText.trim();
 
-      // 2. Hàm tách các khối câu hỏi độc lập trong một phần:
-      // Hỗ trợ nhận diện câu hỏi thông minh ngay cả khi file Word thiếu tiền tố 'Câu X.'
-      const extractQuestionBlocks = (secStr: string, expectedType: 'p1' | 'p2' | 'p3' = 'p1') => {
-        if (!secStr.trim()) return [];
-
-        // 2.1. Thử nhận diện theo các tiền tố kinh điển 'Câu 1.', 'Câu 2.' hoặc 'Bài 1.'
-        const lineRegex = /(?:^|\n|\r)\s*(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s*(\d+)\s*\]?[\.\:\-]?\s*)/gi;
-        let matches = Array.from(secStr.matchAll(lineRegex));
-
-        if (matches.length < 2) {
-          const inlineRegex = /(?:^|\s)(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s*(\d+)\s*\]?[\.\:\-]?\s*)/gi;
-          matches = Array.from(secStr.matchAll(inlineRegex));
+        // Nếu có 'Câu 1.' hoặc 'Câu 1:' hoặc 'Câu 1 [IP]' xuất hiện trong 650 ký tự đầu tiên, cắt bỏ phần tiêu đề/hướng dẫn phía trước nó
+        const firstQuestionMatch = cleaned.match(/(?:^|\n)\s*(?<!(?:từ|đến|tới|ở|theo|như)\s+)(?:\[?\s*(?:Câu|Bài|CAU|BÀI|Question)\s*(?:số\s*)?\d+\s*(?:\([^\)\n]*\))?\s*\]?\s*(?:[\.\:\-\)]+|(?=\s*\[))(?!\s*(?:đến|tới))|(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s+\d+\s*\]?\s+)(?!(?:đến|tới)\b))/i);
+        if (firstQuestionMatch && firstQuestionMatch.index !== undefined && firstQuestionMatch.index < 650) {
+          const leadingNewline = firstQuestionMatch[0].match(/^\s*\n/);
+          const cutPos = firstQuestionMatch.index + (leadingNewline ? leadingNewline[0].length : 0);
+          return cleaned.substring(cutPos).trim();
         }
 
+        // Nếu câu hỏi không có tiền tố "Câu 1.", loại bỏ các dòng đầu tiên nếu chúng là tiêu đề PHẦN hoặc chân tiêu đề hướng dẫn
+        const lines = cleaned.split('\n');
+        while (lines.length > 0) {
+          const firstLine = lines[0].trim();
+          const isHeaderOrInstruction =
+            !firstLine ||
+            /^(?:PH\s*[ẦAÀÂa-z]*\s*N|PART|[I]{1,3}[\.\:\)])\b/i.test(firstLine) ||
+            /^(?:CÂU\s*(?:HỎI\s*)?TRẮC\s*NGHIỆM|TRẮC\s*NGHIỆM\s*(?:NHIỀU|ĐÚNG|TRẢ))/i.test(firstLine) ||
+            /^\(?\s*(?:Thí\s*sinh\s*trả\s*lời\s*từ\s*câu|Mỗi\s*câu\s*hỏi\s*thí\s*sinh|Trong\s*mỗi\s*ý\s*a\s*[\.\)]?)/i.test(firstLine) ||
+            /^(?:SỞ\s+GIÁO\s+DỤC|TRƯỜNG\s+THPT|ĐỀ\s+KIỂM\s+TRA|ĐỀ\s+CHÍNH\s+THỨC|MÔN\s*:|Thời\s*gian\s*làm\s*bài)/i.test(firstLine);
+          if (isHeaderOrInstruction) {
+            lines.shift();
+          } else {
+            break;
+          }
+        }
+        return lines.join('\n').trim();
+      };
+
+      // Hàm tách hình ảnh minh họa (<img class="pdf-figure-img" .../> hoặc ảnh độc lập trong câu hỏi)
+      // đồng thời BẢO TOÀN ĐÚNG VỊ TRÍ ĐỊNH DẠNG (nội dung phía trên hình -> hình ảnh -> nội dung phía dưới hình nếu có)
+      const splitStemByFigure = (rawStem: string): { questionText: string; imageUrl?: string; questionTextAfter?: string } => {
+        let stem = rawStem;
+        const pdfFigRegex = /<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*src=["'](data:image\/[^"']+)["'][^>]*>/i;
+        const pdfMatch = stem.match(pdfFigRegex);
+
+        const cleanQuestionLead = (str: string) =>
+          str
+            .replace(/<img[^>]*>/gi, '')
+            .replace(/<\/?u>/gi, '')
+            .replace(/^\s*\[IP\]\s*/i, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+
+        if (pdfMatch && pdfMatch.index !== undefined) {
+          const imageUrl = pdfMatch[1];
+          const beforeRaw = stem.substring(0, pdfMatch.index);
+          const afterRaw = stem.substring(pdfMatch.index + pdfMatch[0].length);
+          const beforeClean = cleanQuestionLead(beforeRaw);
+          const afterClean = cleanQuestionLead(afterRaw);
+
+          if (beforeClean && afterClean) {
+            return {
+              questionText: beforeClean,
+              imageUrl,
+              questionTextAfter: afterClean,
+            };
+          } else if (beforeClean) {
+            return {
+              questionText: beforeClean,
+              imageUrl,
+            };
+          } else {
+            return {
+              questionText: afterClean,
+              imageUrl,
+            };
+          }
+        }
+
+        // Kiểm tra thẻ <img> từ file Word (không phải công thức toán inline nhỏ math-formula-img)
+        const wordImgRegex = /<img(?![^>]*math-formula-img)[^>]*src=["'](data:image\/[^"']+)["'][^>]*>/i;
+        const wordMatch = stem.match(wordImgRegex);
+        if (wordMatch && wordMatch.index !== undefined) {
+          const imageUrl = wordMatch[1];
+          const beforeClean = cleanQuestionLead(stem.substring(0, wordMatch.index));
+          const afterClean = cleanQuestionLead(stem.substring(wordMatch.index + wordMatch[0].length));
+          if (beforeClean && afterClean) {
+            return {
+              questionText: beforeClean,
+              imageUrl,
+              questionTextAfter: afterClean,
+            };
+          }
+          return {
+            questionText: beforeClean || afterClean,
+            imageUrl,
+          };
+        }
+
+        return {
+          questionText: cleanQuestionLead(stem),
+        };
+      };
+
+      // 2. Hàm tách các khối câu hỏi độc lập trong một phần:
+      const extractQuestionBlocks = (rawSecStr: string, expectedType: 'p1' | 'p2' | 'p3' = 'p1') => {
+        const secStr = stripSectionHeaderAndInstructions(rawSecStr);
+        if (!secStr) return [];
+
+        // 2.1. Nhận diện theo tiền tố chuẩn 'Câu 1.', 'Câu 1:', 'Câu 1)', 'Câu 1 [IP]', 'Câu 1 (0,25 điểm).' hoặc 'Bài 1.'
+        // Loại trừ tuyệt đối cụm "từ câu 1 đến câu 18" hoặc "ở câu 1"
+        const questionPrefixRegex = /(?:^|\n)\s*(?<!(?:từ|đến|tới|ở|theo|như)\s+)(?:\[?\s*(?:Câu|Bài|CAU|BÀI|Question)\s*(?:số\s*)?(\d+)\s*(?:\([^\)\n]{1,30}\))?\s*\]?\s*(?:[\.\:\-\)]+|(?=\s*\[|\s+[A-ZÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ0-9\(]))\s*(?:\[IP\]\s*[\.\:\-\)]*\s*)?)(?!\s*(?:đến|tới)\s*(?:câu|bài))/gi;
+        let matches = Array.from(secStr.matchAll(questionPrefixRegex));
+
+        // Nếu chỉ tìm thấy < 2 câu ở đầu dòng, thử tìm các vị trí 'Câu X.' có dấu chấm/hai chấm rõ ràng
         if (matches.length < 2) {
-          const numRegex = /(?:^|\n|\r)\s*(\d+)[\.\)]\s+/g;
+          const strictInlineRegex = /(?<=^|[\r\n\s])(?<!từ\s|đến\s|tới\s|ở\s|theo\s|như\s)(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s*(\d+)\s*\]?(?:[\.\:\)]+|\s*\[IP\])\s*)/gi;
+          const inlineMatches = Array.from(secStr.matchAll(strictInlineRegex));
+          if (inlineMatches.length > matches.length) {
+            matches = inlineMatches;
+          }
+        }
+
+        // Thử nhận diện dạng đánh số thứ tự đầu dòng '1.', '2.', '3.' nếu không dùng chữ 'Câu'
+        if (matches.length === 0) {
+          const numRegex = /(?:^|\n)\s*(\d{1,2})[\.\)]\s+(?=[A-ZÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐ\(\[])/g;
           const numMatches = Array.from(secStr.matchAll(numRegex));
           if (numMatches.length >= 2) {
             const nums = numMatches.map(m => parseInt(m[1], 10));
@@ -535,7 +728,6 @@ export default function ExamRepository() {
 
         // 2.2. Nhận diện cấu trúc thông minh khi KHÔNG CÓ tiền tố 'Câu X.':
         if (expectedType === 'p1') {
-          // Bóc tách dựa theo chuỗi phương án A, B, C, D
           const optAMatches = Array.from(secStr.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?A[\.\:\)](?:<\/u>)?\s*/g));
           const mcStarts: number[] = [];
           for (let i = 0; i < optAMatches.length; i++) {
@@ -551,11 +743,6 @@ export default function ExamRepository() {
           if (mcStarts.length >= 1) {
             const blocks: { num: number; text: string }[] = [];
             let prevEnd = 0;
-            const secHdr = secStr.match(/(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:I(?![IVX\w])|1\b|THỨ\s*NHẤT)[^\n]*/i);
-            if (secHdr && secHdr.index !== undefined && secHdr.index < mcStarts[0]) {
-              prevEnd = secHdr.index + secHdr[0].length;
-            }
-
             for (let i = 0; i < mcStarts.length; i++) {
               const curA = mcStarts[i];
               const nextA = (i + 1 < mcStarts.length) ? mcStarts[i + 1] : secStr.length;
@@ -576,8 +763,8 @@ export default function ExamRepository() {
                   const dM = chunk.match(/(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?D[\.\:\)](?:<\/u>)?\s*/);
                   if (dM && dM.index !== undefined) {
                     const afterD = chunk.substring(dM.index);
-                    const dnl = afterD.search(/\n\s*\n/);
-                    if (dnl !== -1) blockEnd = curA + dM.index + dnl;
+                    const nlIdx = afterD.indexOf('\n');
+                    if (nlIdx !== -1) blockEnd = curA + dM.index + nlIdx;
                   }
                 }
               }
@@ -588,25 +775,17 @@ export default function ExamRepository() {
             if (blocks.length > 0) return blocks;
           }
         } else if (expectedType === 'p2') {
-          // Bóc tách dựa theo chuỗi 4 ý đúng sai a, b, c, d
-          const subAMatches = Array.from(secStr.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?[aA][\.\:\)](?:<\/u>)?\s*/g));
+          const subAMatches = Array.from(secStr.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?a[\.\:\)](?:<\/u>)?\s*/g));
           const tfStarts: number[] = [];
           for (let i = 0; i < subAMatches.length; i++) {
             const aM = subAMatches[i];
             const nextAIdx = (i + 1 < subAMatches.length) ? subAMatches[i + 1].index! : secStr.length;
             const chunk = secStr.substring(aM.index! + aM[0].length, nextAIdx);
-            const hasB = /(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?[bB][\.\:\)](?:<\/u>)?\s*/.test(chunk);
+            const hasB = /(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?b[\.\:\)](?:<\/u>)?\s*/.test(chunk);
             if (!hasB) continue;
 
             const isAnswerLine = /^(?:đúng|sai|đ\b|s\b|true|false)\b/i.test(chunk.trim());
             if (isAnswerLine) continue;
-
-            const textBefore = secStr.substring(0, aM.index!);
-            const lastSolMatch = Array.from(textBefore.matchAll(new RegExp(robustSolutionRegex, 'gi'))).pop();
-            if (lastSolMatch) {
-              const textBetween = secStr.substring(lastSolMatch.index!, aM.index!);
-              if (!textBetween.includes('\n\n')) continue;
-            }
 
             tfStarts.push(aM.index!);
           }
@@ -614,27 +793,17 @@ export default function ExamRepository() {
           if (tfStarts.length >= 1) {
             const blocks: { num: number; text: string }[] = [];
             let prevEnd = 0;
-            const secHdr = secStr.match(/(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:II(?![IVX\w])|2\b|THỨ\s*HAI)[^\n]*/i);
-            if (secHdr && secHdr.index !== undefined && secHdr.index < tfStarts[0]) {
-              prevEnd = secHdr.index + secHdr[0].length;
-            }
-
             for (let i = 0; i < tfStarts.length; i++) {
               const curA = tfStarts[i];
               const nextA = (i + 1 < tfStarts.length) ? tfStarts[i + 1] : secStr.length;
               let blockEnd = nextA;
               if (i + 1 < tfStarts.length) {
                 const chunk = secStr.substring(curA, nextA);
-                const solM = chunk.match(robustSolutionRegex);
-                if (solM && solM.index !== undefined) {
-                  const solPart = chunk.substring(solM.index);
-                  const endM = solPart.match(/(?:\n\s*\n)([\s\S]*)$/);
-                  if (endM) {
-                    blockEnd = curA + solM.index + (solPart.length - endM[1].length);
-                  } else {
-                    const dnl = chunk.lastIndexOf('\n\n');
-                    if (dnl > solM.index) blockEnd = curA + dnl;
-                  }
+                const dM = chunk.match(/(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?d[\.\:\)](?:<\/u>)?\s*/);
+                if (dM && dM.index !== undefined) {
+                  const afterD = chunk.substring(dM.index);
+                  const nlIdx = afterD.indexOf('\n');
+                  if (nlIdx !== -1) blockEnd = curA + dM.index + nlIdx;
                 }
               }
               const qText = secStr.substring(prevEnd, blockEnd).trim();
@@ -644,16 +813,10 @@ export default function ExamRepository() {
             if (blocks.length > 0) return blocks;
           }
         } else if (expectedType === 'p3') {
-          // Bóc tách câu hỏi trả lời ngắn dựa vào lời giải / đáp số hoặc các đoạn cách nhau bởi dòng trống
           const allSol = Array.from(secStr.matchAll(new RegExp(robustSolutionRegex, 'gi')));
           if (allSol.length >= 1) {
             const blocks: { num: number; text: string }[] = [];
             let prevEnd = 0;
-            const secHdr = secStr.match(/(?:^|[\r\n\s]|<[^>]+>)(?:PH\s*[ẦAÀÂa-z\s]*N|PART)\s*(?:III(?![IVX\w])|3\b|THỨ\s*BA)[^\n]*/i);
-            if (secHdr && secHdr.index !== undefined && secHdr.index < allSol[0].index!) {
-              prevEnd = secHdr.index + secHdr[0].length;
-            }
-
             for (let i = 0; i < allSol.length; i++) {
               const curSol = allSol[i];
               const nextSol = allSol[i + 1];
@@ -681,11 +844,15 @@ export default function ExamRepository() {
           }
         }
 
-        return [{ num: 1, text: secStr.trim() }];
+        // Chỉ trả về 1 câu duy nhất nếu thực sự có nội dung câu hỏi dài hơn 10 ký tự
+        if (secStr.length > 10) {
+          return [{ num: 1, text: secStr }];
+        }
+        return [];
       };
 
       // 3. Hàm phân tích câu hỏi PHẦN I (Trắc nghiệm nhiều lựa chọn A, B, C, D)
-      const parseP1Question = (blockText: string) => {
+      const parseP1Question = (blockText: string, qNumber?: number) => {
         let content = blockText.trim();
         let solution = '';
 
@@ -704,33 +871,48 @@ export default function ExamRepository() {
         let optMatches: RegExpMatchArray[] = [];
         const letters = ['A', 'B', 'C', 'D'];
 
-        for (let i = 0; i < matches.length; i++) {
+        // Duyệt từ vị trí 'A.' CUỐI CÙNG mà phía sau nó có đủ B, C (và D) theo đúng thứ tự
+        for (let i = matches.length - 1; i >= 0; i--) {
           if (matches[i][1] === 'A') {
-            const bM = matches.slice(i + 1).find(m => m[1] === 'B');
-            const cM = matches.slice(i + 1).find(m => m[1] === 'C');
-            if (bM && cM) {
-              firstOptIndex = matches[i].index!;
-              const dM = matches.slice(i + 1).find(m => m[1] === 'D');
-              optMatches = [matches[i], bM, cM, dM].filter(Boolean) as RegExpMatchArray[];
-              break;
+            const afterA = matches.slice(i + 1);
+            const bIdx = afterA.findIndex(m => m[1] === 'B');
+            if (bIdx !== -1) {
+              const bM = afterA[bIdx];
+              const afterB = afterA.slice(bIdx + 1);
+              const cIdx = afterB.findIndex(m => m[1] === 'C');
+              if (cIdx !== -1) {
+                const cM = afterB[cIdx];
+                const afterC = afterB.slice(cIdx + 1);
+                const dM = afterC.find(m => m[1] === 'D');
+                firstOptIndex = matches[i].index!;
+                optMatches = [matches[i], bM, cM, dM].filter(Boolean) as RegExpMatchArray[];
+                break;
+              }
             }
           }
         }
 
-        let questionText = content;
+        let rawStem = content;
         let options: string[] = [];
         let underlineAnswer = '';
 
         if (firstOptIndex !== -1 && optMatches.length >= 2) {
-          questionText = content.substring(0, firstOptIndex).trim();
+          rawStem = content.substring(0, firstOptIndex).trim();
 
           for (let k = 0; k < optMatches.length; k++) {
             const curM = optMatches[k];
             const nextM = optMatches[k + 1];
             const start = curM.index! + curM[0].length;
             const end = nextM ? nextM.index! : content.length;
-            const rawBody = content.substring(start, end).trim();
+            let rawBody = content.substring(start, end).trim();
             const letter = letters[k];
+
+            // Nếu có thẻ <img class="pdf-figure-img"...> vô tình nằm trong phần phương án thì chuyển nó lên rawStem
+            const strayPdfImgs = rawBody.match(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi);
+            if (strayPdfImgs) {
+              rawStem += '\n' + strayPdfImgs.join('\n');
+              rawBody = rawBody.replace(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi, '').trim();
+            }
 
             if (/<u>/i.test(curM[0]) || /<u>/i.test(rawBody)) {
               underlineAnswer = letter;
@@ -743,6 +925,8 @@ export default function ExamRepository() {
             options.push(`${letter}. ${cleanBody}`);
           }
         }
+
+        const { questionText, imageUrl, questionTextAfter } = splitStemByFigure(rawStem);
 
         while (options.length < 4) {
           const letter = letters[options.length];
@@ -758,17 +942,19 @@ export default function ExamRepository() {
 
         let correctAnswer = underlineAnswer;
         if (!correctAnswer) {
-          const ansM = content.match(/(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả|Chọn)\s*[:=]\s*([^\n]+)/i);
-          if (ansM && ansM.index !== undefined) {
-            const mLetter = ansM[1].match(/\b([A-D])\b/i);
-            if (mLetter) correctAnswer = mLetter[1].toUpperCase();
+          const ansM = content.match(/(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả|Chọn)\s*[:=]?\s*\b([A-D])\b/i);
+          if (ansM) {
+            correctAnswer = ansM[1].toUpperCase();
           } else if (solution) {
-            const solAnsM = solution.match(/(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả|Chọn)\s*[:=]\s*([^\n]+)/i);
+            const solAnsM = solution.match(/(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả|Chọn)\s*[:=]?\s*\b([A-D])\b/i);
             if (solAnsM) {
-              const mLetter = solAnsM[1].match(/\b([A-D])\b/i);
-              if (mLetter) correctAnswer = mLetter[1].toUpperCase();
+              correctAnswer = solAnsM[1].toUpperCase();
             }
           }
+        }
+
+        if (!correctAnswer && qNumber && p1AnswerKeyMap[qNumber]) {
+          correctAnswer = p1AnswerKeyMap[qNumber];
         }
 
         if (!correctAnswer) {
@@ -776,11 +962,13 @@ export default function ExamRepository() {
         }
 
         return {
-          questionText: questionText.replace(/<\/?u>/gi, '').trim() || blockText.replace(/<\/?u>/gi, '').trim(),
+          questionText: questionText || content.replace(/<img[^>]*>/gi, '').replace(/<\/?u>/gi, '').trim(),
+          questionTextAfter,
+          imageUrl,
           options,
           correctAnswer,
           questionType: 'trắc nghiệm' as const,
-          solution: solution.replace(/<\/?u>/gi, '').trim()
+          solution: solution.replace(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi, '').replace(/<\/?u>/gi, '').trim()
         };
       };
 
@@ -814,39 +1002,60 @@ export default function ExamRepository() {
           detectedTfAnswers['d'] = (partD.startsWith('đ') || partD === 'true') ? 'Đúng' : 'Sai';
         }
 
-        // 2. Bóc tách 4 ý a, b, c, d
-        const subRegex = /(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?([a-dA-D])[\.\:\)](?:<\/u>)?\s*/g;
-        const matches = Array.from(content.matchAll(subRegex));
+        // 2. Bóc tách 4 ý a), b), c), d) (ưu tiên dấu đóng ngoặc đơn ')' hoặc đầu dòng để không bắt nhầm chữ 'a.' trong câu văn)
+        const parenSubRegex = /(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?([a-d])\)(?:<\/u>)?\s*/g;
+        let matches = Array.from(content.matchAll(parenSubRegex));
+        if (matches.length < 3) {
+          const lowerSubRegex = /(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?([a-d])[\.\:\)](?:<\/u>)?\s*/g;
+          matches = Array.from(content.matchAll(lowerSubRegex));
+        }
+        if (matches.length < 3) {
+          const anyCaseSubRegex = /(?<=^|[\r\n\s]|<[^>]+>)(?:<u>\s*)?([a-dA-D])[\.\:\)](?:<\/u>)?\s*/g;
+          matches = Array.from(content.matchAll(anyCaseSubRegex));
+        }
 
         let firstSubIndex = -1;
         let subMatches: RegExpMatchArray[] = [];
 
-        for (let i = 0; i < matches.length; i++) {
+        for (let i = matches.length - 1; i >= 0; i--) {
           if (matches[i][1].toLowerCase() === 'a') {
-            const bM = matches.slice(i + 1).find(m => m[1].toLowerCase() === 'b');
-            const cM = matches.slice(i + 1).find(m => m[1].toLowerCase() === 'c');
-            if (bM && cM) {
-              firstSubIndex = matches[i].index!;
-              const dM = matches.slice(i + 1).find(m => m[1].toLowerCase() === 'd');
-              subMatches = [matches[i], bM, cM, dM].filter(Boolean) as RegExpMatchArray[];
-              break;
+            const afterA = matches.slice(i + 1);
+            const bIdx = afterA.findIndex(m => m[1].toLowerCase() === 'b');
+            if (bIdx !== -1) {
+              const bM = afterA[bIdx];
+              const afterB = afterA.slice(bIdx + 1);
+              const cIdx = afterB.findIndex(m => m[1].toLowerCase() === 'c');
+              if (cIdx !== -1) {
+                const cM = afterB[cIdx];
+                const afterC = afterB.slice(cIdx + 1);
+                const dM = afterC.find(m => m[1].toLowerCase() === 'd');
+                firstSubIndex = matches[i].index!;
+                subMatches = [matches[i], bM, cM, dM].filter(Boolean) as RegExpMatchArray[];
+                break;
+              }
             }
           }
         }
 
-        let questionText = content;
+        let rawStem = content;
         let options: string[] = [];
 
         if (firstSubIndex !== -1 && subMatches.length >= 2) {
-          questionText = content.substring(0, firstSubIndex).trim();
+          rawStem = content.substring(0, firstSubIndex).trim();
 
           for (let k = 0; k < subMatches.length; k++) {
             const curM = subMatches[k];
             const nextM = subMatches[k + 1];
             const start = curM.index! + curM[0].length;
             const end = nextM ? nextM.index! : content.length;
-            const rawBody = content.substring(start, end).trim();
+            let rawBody = content.substring(start, end).trim();
             const letter = subLetters[k];
+
+            const strayPdfImgs = rawBody.match(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi);
+            if (strayPdfImgs) {
+              rawStem += '\n' + strayPdfImgs.join('\n');
+              rawBody = rawBody.replace(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi, '').trim();
+            }
 
             if (/<u>\s*(?:đúng|dung|true|đ)\s*<\/u>/i.test(rawBody) || /\(?(?:đúng|dung|true)\)?$/i.test(rawBody)) {
               detectedTfAnswers[letter] = 'Đúng';
@@ -856,13 +1065,15 @@ export default function ExamRepository() {
 
             const cleanBody = rawBody
               .replace(/<\/?u>/gi, '')
-              .replace(/\b(?:Đúng|Sai|True|False)\b/gi, '')
+              .replace(/\((?:Đúng|Sai|True|False|\s*\/?\s*)+\)\s*$/gi, '')
               .replace(/[\(\[\{]\s*[\}\]\)]/g, '')
               .trim();
 
             options.push(`${letter}) ${cleanBody || 'Ý thứ ' + (k + 1)}`);
           }
         }
+
+        const { questionText, imageUrl, questionTextAfter } = splitStemByFigure(rawStem);
 
         while (options.length < 4) {
           const letter = subLetters[options.length];
@@ -873,7 +1084,7 @@ export default function ExamRepository() {
         if (solution) {
           ['a', 'b', 'c', 'd'].forEach(l => {
             if (!detectedTfAnswers[l]) {
-              const pat = new RegExp('(?:^|[\\r\\n\\s])' + l + '[\\.\\:\\)]\\s*(?:là\\s*)?(đúng|sai|đ|s|true|false)', 'i');
+              const pat = new RegExp('(?:^|[\\r\\n\\s])' + l + '[\\.\\:\\)]\\s*(?:là\\s*|chọn\\s*)?(đúng|sai|đ|s|true|false)', 'i');
               const m = solution.match(pat);
               if (m) {
                 detectedTfAnswers[l] = (m[1].toLowerCase().startsWith('đ') || m[1].toLowerCase() === 'true') ? 'Đúng' : 'Sai';
@@ -885,28 +1096,30 @@ export default function ExamRepository() {
         const correctAnswer = subLetters.map(l => `${l}) ${detectedTfAnswers[l] || 'Đúng'}`).join(' - ');
 
         return {
-          questionText: questionText.replace(/<\/?u>/gi, '').trim() || blockText.replace(/<\/?u>/gi, '').trim(),
+          questionText: questionText || content.replace(/<img[^>]*>/gi, '').replace(/<\/?u>/gi, '').trim(),
+          questionTextAfter,
+          imageUrl,
           options,
           correctAnswer,
           questionType: 'đúng sai' as const,
-          solution: solution.replace(/<\/?u>/gi, '').trim()
+          solution: solution.replace(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi, '').replace(/<\/?u>/gi, '').trim()
         };
       };
 
       // 5. Hàm phân tích câu hỏi PHẦN III (Trắc nghiệm trả lời ngắn)
       const parseP3Question = (blockText: string) => {
-        let content = blockText.trim();
+        let rawContent = blockText.trim();
         let solution = '';
 
         // Tách từ khóa 'Lời giải:' chuẩn xác
-        const solM = content.match(robustSolutionRegex);
+        const solM = rawContent.match(robustSolutionRegex);
         if (solM && solM.index !== undefined) {
-          solution = content.substring(solM.index + solM[0].length).trim();
-          content = content.substring(0, solM.index).trim();
+          solution = rawContent.substring(solM.index + solM[0].length).trim();
+          rawContent = rawContent.substring(0, solM.index).trim();
         }
 
         let underlineAnswer = '';
-        const underM = content.match(/<u>([^<]+)<\/u>/i);
+        const underM = rawContent.match(/<u>([^<]+)<\/u>/i);
         if (underM) {
           const cand = underM[1].trim();
           if (cand.length > 0 && cand.length <= 30) {
@@ -917,14 +1130,15 @@ export default function ExamRepository() {
         let correctAnswer = underlineAnswer;
         if (!correctAnswer) {
           const ansPatterns = [
-            /(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả)\s*[:=]\s*([^\n]+)/i,
-            /(?:^|[\r\n\s])(?:K\s*ế\s*t\s*q\s*u\s*ả\s*l\s*ấ\s*y\s*đ\s*ế\s*n\s*[^\:]*là|K\s*ế\s*t\s*q\s*u\s*ả\s*là)\s*([^\n\.]+)/i
+            /(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả|Trả lời)\s*[:=]\s*([^\n]+)/i,
+            /(?:^|[\r\n\s])(?:K\s*ế\s*t\s*q\s*u\s*ả\s*l\s*ấ\s*y\s*đ\s*ế\s*n\s*[^\:]*là|K\s*ế\s*t\s*q\s*u\s*ả\s*là|Đ\s*á\s*p\s*s\s*ố\s*là)\s*([^\n\.]+)/i
           ];
 
           for (const pat of ansPatterns) {
-            const m = content.match(pat) || (solution ? solution.match(pat) : null);
+            const m = rawContent.match(pat) || (solution ? solution.match(pat) : null);
             if (m) {
               correctAnswer = m[1].replace(/[\$\,\.\s]+$/, '').trim();
+              rawContent = rawContent.replace(pat, '').trim();
               break;
             }
           }
@@ -934,13 +1148,37 @@ export default function ExamRepository() {
           correctAnswer = '10';
         }
 
+        const { questionText, imageUrl, questionTextAfter } = splitStemByFigure(rawContent);
+
         return {
-          questionText: content.replace(/<\/?u>/gi, '').trim() || blockText.replace(/<\/?u>/gi, '').trim(),
+          questionText: questionText || rawContent.replace(/<img[^>]*>/gi, '').replace(/<\/?u>/gi, '').trim(),
+          questionTextAfter,
+          imageUrl,
           options: [],
           correctAnswer,
           questionType: 'trả lời ngắn' as const,
-          solution: solution.replace(/<\/?u>/gi, '').trim()
+          solution: solution.replace(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi, '').replace(/<\/?u>/gi, '').trim()
         };
+      };
+
+      // Hàm kiểm tra đặc trưng cấu trúc của một khối câu hỏi (phục vụ tự động phân loại khi tiêu đề phần bị thiếu/mờ)
+      const classifyBlockStructure = (bText: string): 'p1' | 'p2' | 'p3' => {
+        const cleanPart = bText.split(robustSolutionRegex)[0] || bText;
+        // Kiểm tra có đủ a), b), c) của Phần II không
+        const hasLowerA = /(?<=^|[\r\n\s]|<[^>]+>)a[\.\:\)]\s/.test(cleanPart);
+        const hasLowerB = /(?<=^|[\r\n\s]|<[^>]+>)b[\.\:\)]\s/.test(cleanPart);
+        const hasLowerC = /(?<=^|[\r\n\s]|<[^>]+>)c[\.\:\)]\s/.test(cleanPart);
+        if (hasLowerA && hasLowerB && hasLowerC) {
+          return 'p2';
+        }
+        // Kiểm tra có đủ A., B., C. của Phần I không
+        const hasUpperA = /(?<=^|[\r\n\s]|<[^>]+>)A[\.\:\)]\s/.test(cleanPart);
+        const hasUpperB = /(?<=^|[\r\n\s]|<[^>]+>)B[\.\:\)]\s/.test(cleanPart);
+        const hasUpperC = /(?<=^|[\r\n\s]|<[^>]+>)C[\.\:\)]\s/.test(cleanPart);
+        if (hasUpperA && hasUpperB && hasUpperC) {
+          return 'p1';
+        }
+        return 'p3';
       };
 
       // 6. Bóc tách câu hỏi chuẩn xác cho từng phần
@@ -950,54 +1188,71 @@ export default function ExamRepository() {
       let p2Blocks = rawP2.trim() ? extractQuestionBlocks(rawP2, 'p2') : [];
       let p3Blocks = rawP3.trim() ? extractQuestionBlocks(rawP3, 'p3') : [];
 
-      // Tự động phân bổ lại nếu câu hỏi bị dồn hết vào một phần (do file không có tiêu đề phần 2/3):
-      if (p1Blocks.length > 0 && p2Blocks.length === 0 && p3Blocks.length === 0) {
-        const autoP1: typeof p1Blocks = [];
-        const autoP2: typeof p2Blocks = [];
-        const autoP3: typeof p3Blocks = [];
+      const hasAllThreeExplicitSections = idx1 !== -1 && idx2 !== -1 && idx3 !== -1 && idx1 < idx2 && idx2 < idx3;
 
-        p1Blocks.forEach((b) => {
-          const bText = b.text;
-          const tfSubMatches = Array.from(bText.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)[a-d][\.\:\)]\s*/gi));
-          const hasTFKeywords = /(?:đúng|sai|true|false)/i.test(bText);
-          const hasMC = Array.from(bText.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)[A-D][\.\:\)]\s*/g)).length >= 2;
+      // Nếu không bắt được đủ cả 3 tiêu đề Phần I, Phần II, Phần III (khiến câu hỏi bị dồn vào 1 phần),
+      // tự động tách theo sự quay vòng số câu (Câu 1..18 -> Câu 1..4 -> Câu 1..6) kết hợp nhận diện cấu trúc A,B,C,D / a,b,c,d / trả lời ngắn
+      if (!hasAllThreeExplicitSections) {
+        if (p1Blocks.length > 0 && p2Blocks.length === 0 && p3Blocks.length === 0) {
+          const autoP1: typeof p1Blocks = [];
+          const autoP2: typeof p2Blocks = [];
+          const autoP3: typeof p3Blocks = [];
+          let currentStage: 'p1' | 'p2' | 'p3' = 'p1';
 
-          if (tfSubMatches.length >= 2 && (hasTFKeywords || !hasMC)) {
-            autoP2.push(b);
-          } else if (hasMC) {
-            autoP1.push(b);
-          } else {
-            autoP3.push(b);
+          p1Blocks.forEach((b, i) => {
+            const structType = classifyBlockStructure(b.text);
+            // Nếu số thứ tự câu quay về 1 (reset) sau câu đầu tiên
+            if (i > 0 && b.num === 1 && p1Blocks[i - 1].num > 1) {
+              if (currentStage === 'p1') currentStage = structType === 'p3' ? 'p3' : 'p2';
+              else if (currentStage === 'p2') currentStage = 'p3';
+            }
+
+            if (structType === 'p2') {
+              currentStage = 'p2';
+              autoP2.push(b);
+            } else if (structType === 'p1') {
+              autoP1.push(b);
+            } else {
+              if (currentStage === 'p2' || currentStage === 'p3' || autoP2.length > 0) {
+                currentStage = 'p3';
+                autoP3.push(b);
+              } else {
+                autoP3.push(b);
+              }
+            }
+          });
+
+          if (autoP2.length > 0 || autoP3.length > 0) {
+            p1Blocks = autoP1;
+            p2Blocks = autoP2;
+            p3Blocks = autoP3;
           }
-        });
-
-        if (autoP2.length > 0 || autoP3.length > 0) {
-          p1Blocks = autoP1;
-          p2Blocks = autoP2;
-          p3Blocks = autoP3;
+        } else if (p1Blocks.length > 0 && p2Blocks.length > 0 && p3Blocks.length === 0) {
+          // Trường hợp có Phần I và Phần II nhưng tiêu đề Phần III bị khuất nên Phần III dính vào cuối Phần II
+          const realP2: typeof p2Blocks = [];
+          const overflowP3: typeof p3Blocks = [];
+          let enteredP3 = false;
+          p2Blocks.forEach((b, i) => {
+            const structType = classifyBlockStructure(b.text);
+            if (i > 0 && ((b.num === 1 && p2Blocks[i - 1].num > 1) || structType === 'p3')) {
+              enteredP3 = true;
+            }
+            if (enteredP3 && structType !== 'p2') {
+              overflowP3.push(b);
+            } else {
+              realP2.push(b);
+            }
+          });
+          if (overflowP3.length > 0) {
+            p2Blocks = realP2;
+            p3Blocks = overflowP3;
+          }
         }
-      } else if (p1Blocks.length === 0 && p2Blocks.length === 0 && p3Blocks.length === 0) {
-        // Tách câu hỏi từ toàn bộ văn bản và tự động phân loại thông minh theo cấu trúc
-        const allBlocks = extractQuestionBlocks(text, 'p1');
-        allBlocks.forEach((b) => {
-          const bText = b.text;
-          const tfSubMatches = Array.from(bText.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)[a-d][\.\:\)]\s*/gi));
-          const hasTFKeywords = /(?:đúng|sai|true|false)/i.test(bText);
-          const hasMC = Array.from(bText.matchAll(/(?<=^|[\r\n\s]|<[^>]+>)[A-D][\.\:\)]\s*/g)).length >= 2;
-
-          if (tfSubMatches.length >= 2 && (hasTFKeywords || !hasMC)) {
-            p2Blocks.push(b);
-          } else if (hasMC) {
-            p1Blocks.push(b);
-          } else {
-            p3Blocks.push(b);
-          }
-        });
       }
 
       p1Blocks.forEach((b, idx) => {
         finalQuestions.push({
-          ...parseP1Question(b.text),
+          ...parseP1Question(b.text, b.num || idx + 1),
           sectionGroup: 'PHẦN I: Câu hỏi trắc nghiệm nhiều phương án lựa chọn',
           section: `Phần I - Câu ${idx + 1}`
         });
@@ -1032,7 +1287,7 @@ export default function ExamRepository() {
       setShowSettingModal(true);
       setNotification({
         type: 'success',
-        message: `Đã trích xuất chính xác ${finalQuestions.length} câu hỏi theo đúng các phần trong file!`
+        message: `Đã trích xuất chính xác ${finalQuestions.length} câu hỏi (Phần I: ${p1Blocks.length}, Phần II: ${p2Blocks.length}, Phần III: ${p3Blocks.length})!`
       });
     } catch (err: any) {
       console.warn('Lưu ý khi bóc tách tệp:', err);
@@ -1040,11 +1295,11 @@ export default function ExamRepository() {
       if (err?.message === 'FILE_BINARY_DOC_LEGACY') {
         userMsg = 'Tệp bạn tải lên có định dạng Word cũ (.doc nhị phân). Vui lòng mở tệp bằng Word hoặc Google Docs, chọn "Lưu dưới dạng..." (Save As) thành file .docx (Word Document) rồi tải lại để hệ thống nhận diện đầy đủ nhất!';
       } else if (err?.message === 'FILE_PDF_UNREADABLE') {
-        userMsg = 'Tệp PDF này không chứa văn bản có thể trích xuất (có thể là file scan hoặc hình ảnh). Vui lòng sử dụng file Word (.docx) hoặc tải file mẫu!';
+        userMsg = 'Tệp PDF này không chứa văn bản có thể trích xuất (có thể là file scan hoặc hình ảnh). Vui lòng sử dụng file PDF có lớp văn bản hoặc file Word (.docx)!';
       } else if (err?.message === 'FILE_UNSUPPORTED_OR_EMPTY') {
-        userMsg = 'Tệp rỗng hoặc định dạng không được hỗ trợ. Vui lòng tải file Word (.docx) hoặc tải file mẫu chuẩn Form 2025 bên dưới.';
+        userMsg = 'Tệp rỗng hoặc định dạng không được hỗ trợ. Vui lòng tải file PDF hoặc Word (.docx) chuẩn Form 2025.';
       } else {
-        userMsg = `Không thể bóc tách nội dung: ${err?.message || 'Vui lòng kiểm tra lại file .docx'}`;
+        userMsg = `Không thể bóc tách nội dung: ${err?.message || 'Vui lòng kiểm tra lại file PDF / Word (.docx)'}`;
       }
       setNotification({ type: 'error', message: userMsg });
     }
@@ -2129,8 +2384,24 @@ export default function ExamRepository() {
                                   <MathText text={q.questionText} />
                                 </div>
 
+                                {q.imageUrl && (
+                                  <div className="my-2 flex justify-center bg-white p-3 rounded-xl border border-gray-200">
+                                    <img
+                                      src={q.imageUrl}
+                                      alt={`Hình minh họa câu ${idx + 1}`}
+                                      className="max-h-64 max-w-full object-contain rounded-lg"
+                                    />
+                                  </div>
+                                )}
+
+                                {q.questionTextAfter && (
+                                  <div className="text-xs text-gray-900 font-medium leading-relaxed pl-1">
+                                    <MathText text={q.questionTextAfter} />
+                                  </div>
+                                )}
+
                                 {q.options && q.options.length > 0 && (
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pl-2 text-xs">
+                                  <div className="grid grid-cols-1 gap-2 pl-2 text-xs">
                                     {q.options.map((opt: string, oIdx: number) => {
                                       const letters = ['A', 'B', 'C', 'D'];
                                       const subLetters = ['a', 'b', 'c', 'd'];
@@ -2224,42 +2495,131 @@ export default function ExamRepository() {
 
                               {/* Question Content */}
                               <div>
-                                <label className="block text-[11px] font-bold text-gray-700 mb-1">
-                                  Nội dung câu hỏi:
-                                </label>
+                                <div className="flex items-center justify-between mb-1">
+                                  <label className="block text-[11px] font-bold text-gray-700">
+                                    Nội dung câu hỏi:
+                                  </label>
+                                  {!q.imageUrl && (
+                                    <label className="inline-flex items-center gap-1 px-2 py-0.5 bg-white hover:bg-teal-50 text-teal-700 border border-teal-300 rounded-md text-[11px] font-semibold cursor-pointer transition-colors">
+                                      <UploadCloud className="w-3 h-3" />
+                                      <span>Thêm ảnh minh họa</span>
+                                      <input
+                                        type="file"
+                                        accept="image/*"
+                                        className="hidden"
+                                        onChange={(e) => {
+                                          const imgFile = e.target.files?.[0];
+                                          if (!imgFile) return;
+                                          const reader = new FileReader();
+                                          reader.onload = () => {
+                                            if (typeof reader.result === 'string') {
+                                              handleUpdateQuestion(globalIdx, 'imageUrl', reader.result);
+                                            }
+                                          };
+                                          reader.readAsDataURL(imgFile);
+                                        }}
+                                      />
+                                    </label>
+                                  )}
+                                </div>
                                 <textarea
-                                  rows={4}
+                                  rows={3}
                                   value={q.questionText}
                                   onChange={(e) => handleUpdateQuestion(globalIdx, 'questionText', e.target.value)}
                                   placeholder="Nhập nội dung câu hỏi..."
-                                  className="w-full min-h-[100px] px-3 py-2.5 text-xs font-medium text-gray-800 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
+                                  className="w-full min-h-[80px] px-3 py-2 text-xs font-medium text-gray-800 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
                                 />
                                 <MathPreview content={q.questionText} label="Xem trước câu hỏi (MathType / KaTeX):" />
                               </div>
+
+                              {/* Hình ảnh / Đồ thị / Bảng dữ liệu nằm đúng vị trí định dạng trong câu hỏi */}
+                              {q.imageUrl && (
+                                <div className="bg-gray-50/80 border border-gray-200 rounded-xl p-3 space-y-2">
+                                  <div className="flex items-center justify-between flex-wrap gap-2">
+                                    <span className="text-[11px] font-bold text-gray-700">
+                                      🖼️ Hình ảnh / Đồ thị / Bảng dữ liệu trong câu hỏi:
+                                    </span>
+                                    <div className="flex items-center gap-2">
+                                      <label className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-teal-50 text-teal-700 border border-teal-300 rounded-lg text-[11px] font-semibold cursor-pointer transition-colors">
+                                        <UploadCloud className="w-3.5 h-3.5" />
+                                        <span>Đổi ảnh khác</span>
+                                        <input
+                                          type="file"
+                                          accept="image/*"
+                                          className="hidden"
+                                          onChange={(e) => {
+                                            const imgFile = e.target.files?.[0];
+                                            if (!imgFile) return;
+                                            const reader = new FileReader();
+                                            reader.onload = () => {
+                                              if (typeof reader.result === 'string') {
+                                                handleUpdateQuestion(globalIdx, 'imageUrl', reader.result);
+                                              }
+                                            };
+                                            reader.readAsDataURL(imgFile);
+                                          }}
+                                        />
+                                      </label>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateQuestion(globalIdx, 'imageUrl', undefined)}
+                                        className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-red-50 text-red-600 border border-red-200 rounded-lg text-[11px] font-semibold cursor-pointer transition-colors"
+                                      >
+                                        <X className="w-3 h-3" />
+                                        <span>Xóa ảnh</span>
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="flex justify-center bg-white p-2.5 rounded-lg border border-gray-200">
+                                    <img
+                                      src={q.imageUrl}
+                                      alt={`Hình minh họa câu ${idx + 1}`}
+                                      className="max-h-60 max-w-full object-contain rounded"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+
+                              {q.questionTextAfter !== undefined && q.questionTextAfter !== '' && (
+                                <div>
+                                  <label className="block text-[11px] font-bold text-gray-700 mb-1">
+                                    Nội dung câu hỏi phía dưới hình / bảng:
+                                  </label>
+                                  <textarea
+                                    rows={2}
+                                    value={q.questionTextAfter}
+                                    onChange={(e) => handleUpdateQuestion(globalIdx, 'questionTextAfter', e.target.value)}
+                                    placeholder="Nội dung câu hỏi tiếp theo dưới hình ảnh..."
+                                    className="w-full min-h-[60px] px-3 py-2 text-xs font-medium text-gray-800 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
+                                  />
+                                  <MathPreview content={q.questionTextAfter} label="Xem trước phần dưới hình:" />
+                                </div>
+                              )}
 
                               {/* Options & Answers Section */}
                               {sectionType === 'P1' && (
                                 <div>
                                   <label className="block text-[11px] font-bold text-gray-700 mb-1.5">
-                                    Phương án lựa chọn <span className="text-gray-400 font-normal">(Bấm vào chữ cái để chọn đáp án đúng):</span>
+                                    Phương án lựa chọn <span className="text-gray-400 font-normal">(Mỗi đáp án 1 dòng riêng — Bấm vào chữ cái để chọn đáp án đúng):</span>
                                   </label>
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  <div className="space-y-2">
                                     {['A', 'B', 'C', 'D'].map((letter, oIdx) => {
                                       const isChosen = q.correctAnswer && q.correctAnswer.trim().toUpperCase() === letter;
                                       const rawOpt = (q.options && q.options[oIdx]) || '';
                                       const cleanBody = rawOpt.replace(/^[A-D][\.\)]\s*/i, '');
+                                      const autoRows = Math.max(2, Math.ceil((cleanBody.length || 1) / 95));
 
                                       return (
                                         <div
                                           key={letter}
-                                          className={`flex items-center gap-2 p-1.5 rounded-lg border transition-colors ${
+                                          className={`flex items-start gap-2.5 p-2 rounded-lg border transition-colors ${
                                             isChosen ? 'bg-teal-50/70 border-teal-400' : 'bg-gray-50 border-gray-200'
                                           }`}
                                         >
                                           <button
                                             type="button"
                                             onClick={() => handleSelectPart1Answer(globalIdx, letter)}
-                                            className={`w-7 h-7 rounded-full text-xs font-bold flex items-center justify-center shrink-0 cursor-pointer transition-all ${
+                                            className={`mt-1 w-7 h-7 rounded-full text-xs font-bold flex items-center justify-center shrink-0 cursor-pointer transition-all ${
                                               isChosen
                                                 ? 'bg-teal-700 text-white shadow-xs ring-2 ring-teal-400'
                                                 : 'bg-white text-gray-600 hover:bg-gray-200 border border-gray-300'
@@ -2269,14 +2629,14 @@ export default function ExamRepository() {
                                             {letter}
                                           </button>
                                           <textarea
-                                            rows={2}
+                                            rows={autoRows}
                                             value={cleanBody}
                                             onChange={(e) => handleUpdateOption(globalIdx, oIdx, e.target.value)}
                                             placeholder={`Phương án ${letter}...`}
-                                            className="flex-1 min-h-[44px] px-2.5 py-2 text-xs text-gray-800 bg-white border border-gray-300 rounded-md focus:ring-1 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
+                                            className="flex-1 min-h-[44px] px-3 py-2 text-xs text-gray-800 bg-white border border-gray-300 rounded-md focus:ring-1 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
                                           />
                                           {isChosen && (
-                                            <span className="text-[10px] text-teal-800 font-bold bg-teal-100 px-1.5 py-0.5 rounded shrink-0">
+                                            <span className="mt-1.5 text-[10px] text-teal-800 font-bold bg-teal-100 px-2 py-0.5 rounded shrink-0">
                                               Đáp án
                                             </span>
                                           )}
@@ -2583,8 +2943,22 @@ export default function ExamRepository() {
                               <div className="text-xs text-gray-900 font-medium leading-relaxed pl-1">
                                 <MathText text={q.questionText} />
                               </div>
+                              {q.imageUrl && (
+                                <div className="my-2 flex justify-center bg-white p-3 rounded-xl border border-gray-200">
+                                  <img
+                                    src={q.imageUrl}
+                                    alt={`Hình minh họa câu ${idx + 1}`}
+                                    className="max-h-64 max-w-full object-contain rounded-lg"
+                                  />
+                                </div>
+                              )}
+                              {q.questionTextAfter && (
+                                <div className="text-xs text-gray-900 font-medium leading-relaxed pl-1">
+                                  <MathText text={q.questionTextAfter} />
+                                </div>
+                              )}
                               {q.options && q.options.length > 0 && (
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pl-2 text-xs text-gray-700">
+                                <div className="grid grid-cols-1 gap-2 pl-2 text-xs text-gray-700">
                                   {q.options.map((opt, oIdx) => {
                                     const currentLetter = isP1 ? letters[oIdx] : subLetters[oIdx];
                                     const isChosenP1 = isP1 && q.correctAnswer && q.correctAnswer.trim().toUpperCase() === currentLetter;
@@ -2655,6 +3029,20 @@ export default function ExamRepository() {
                       <div className="text-xs text-gray-900 font-medium leading-relaxed pl-1">
                         <MathText text={q.questionText} />
                       </div>
+                      {q.imageUrl && (
+                        <div className="my-2 flex justify-center bg-white p-3 rounded-xl border border-gray-200">
+                          <img
+                            src={q.imageUrl}
+                            alt={`Hình minh họa câu ${idx + 1}`}
+                            className="max-h-64 max-w-full object-contain rounded-lg"
+                          />
+                        </div>
+                      )}
+                      {q.questionTextAfter && (
+                        <div className="text-xs text-gray-900 font-medium leading-relaxed pl-1">
+                          <MathText text={q.questionTextAfter} />
+                        </div>
+                      )}
                       {q.options && q.options.length > 0 && (
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pl-2 text-xs text-gray-700">
                           {q.options.map((opt, oIdx) => {

@@ -1476,6 +1476,12 @@ export default function ExamTest() {
                       </div>
                     )}
 
+                    {(q as any).questionTextAfter && (
+                      <div className="font-bold text-gray-900 text-sm leading-relaxed">
+                        <MathText text={(q as any).questionTextAfter} />
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-1 gap-2 pt-1">
                       {q.options.map((opt, oIdx) => {
                         const letter = ['A', 'B', 'C', 'D'][oIdx] || String(oIdx + 1);
@@ -1598,6 +1604,12 @@ export default function ExamTest() {
                     {q.imageUrl && (
                       <div className="my-3 flex justify-center bg-gray-50 p-3 rounded-xl border border-gray-200">
                         <img src={q.imageUrl} alt="Hình minh họa" className="max-h-60 rounded-lg object-contain pointer-events-none" />
+                      </div>
+                    )}
+
+                    {(q as any).questionTextAfter && (
+                      <div className="font-bold text-gray-900 text-sm leading-relaxed">
+                        <MathText text={(q as any).questionTextAfter} />
                       </div>
                     )}
 
@@ -1756,6 +1768,12 @@ export default function ExamTest() {
                     {q.imageUrl && (
                       <div className="my-3 flex justify-center bg-gray-50 p-3 rounded-xl border border-gray-200">
                         <img src={q.imageUrl} alt="Hình minh họa" className="max-h-60 rounded-lg object-contain pointer-events-none" />
+                      </div>
+                    )}
+
+                    {(q as any).questionTextAfter && (
+                      <div className="font-bold text-gray-900 text-sm leading-relaxed">
+                        <MathText text={(q as any).questionTextAfter} />
                       </div>
                     )}
 
