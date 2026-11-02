@@ -3,7 +3,7 @@ import {
   GoogleAuthProvider, 
   getAuth 
 } from "firebase/auth";
-import { getFirestore } from "firebase/firestore";
+import { getFirestore, initializeFirestore } from "firebase/firestore";
 import firebaseConfigData from "../firebase-applet-config.json";
 
 // Lấy biến môi trường an toàn (hỗ trợ cả process.env, import.meta.env và file JSON)
@@ -47,7 +47,13 @@ if (typeof window !== 'undefined') {
     if (apiKey) {
       app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
       const dbId = (firebaseConfigData as any)?.firestoreDatabaseId;
-      db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+      try {
+        db = dbId
+          ? initializeFirestore(app, { ignoreUndefinedProperties: true }, dbId)
+          : initializeFirestore(app, { ignoreUndefinedProperties: true });
+      } catch {
+        db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+      }
       auth = getAuth(app);
     }
   } catch (e) {

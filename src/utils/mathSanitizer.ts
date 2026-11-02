@@ -5,10 +5,225 @@
 // @ts-ignore
 import JSZip from 'jszip';
 
+// Bảng ánh xạ đầy đủ các ký tự Private Use Area (PUA: U+F020..U+F0FF) của font Symbol / MT Extra / Wingdings trong PDF & Word sang Unicode chuẩn
+const SYMBOL_PUA_MAP: Record<number, string> = {
+  0xF020: ' ',
+  0xF021: '!',
+  0xF022: '∀',
+  0xF023: '#',
+  0xF024: '∃',
+  0xF025: '%',
+  0xF026: '&',
+  0xF027: '∋',
+  0xF028: '(',
+  0xF029: ')',
+  0xF02A: '*',
+  0xF02B: '+',
+  0xF02C: ',',
+  0xF02D: '-',
+  0xF02E: '.',
+  0xF02F: '/',
+  0xF030: '0',
+  0xF031: '1',
+  0xF032: '2',
+  0xF033: '3',
+  0xF034: '4',
+  0xF035: '5',
+  0xF036: '6',
+  0xF037: '7',
+  0xF038: '8',
+  0xF039: '9',
+  0xF03A: ':',
+  0xF03B: ';',
+  0xF03C: '<',
+  0xF03D: '=',
+  0xF03E: '>',
+  0xF03F: '?',
+  0xF040: '≅',
+  0xF041: 'A',
+  0xF042: 'B',
+  0xF043: 'Χ',
+  0xF044: 'Δ',
+  0xF045: 'E',
+  0xF046: 'Φ',
+  0xF047: 'Γ',
+  0xF048: 'H',
+  0xF049: 'I',
+  0xF04A: 'ϑ',
+  0xF04B: 'K',
+  0xF04C: 'Λ',
+  0xF04D: 'M',
+  0xF04E: 'N',
+  0xF04F: 'O',
+  0xF050: 'Π',
+  0xF051: 'Θ',
+  0xF052: 'P',
+  0xF053: 'Σ',
+  0xF054: 'T',
+  0xF055: 'Υ',
+  0xF056: 'ς',
+  0xF057: 'Ω',
+  0xF058: 'Ξ',
+  0xF059: 'Ψ',
+  0xF05A: 'Z',
+  0xF05B: '[',
+  0xF05C: '∴',
+  0xF05D: ']',
+  0xF05E: '⊥',
+  0xF05F: '_',
+  0xF060: '', // Thanh ngang kéo dài của căn bậc hai trong font Symbol
+  0xF061: 'α',
+  0xF062: 'β',
+  0xF063: 'χ',
+  0xF064: 'δ',
+  0xF065: 'ε',
+  0xF066: 'φ',
+  0xF067: 'γ',
+  0xF068: 'η',
+  0xF069: 'ι',
+  0xF06A: 'ϕ',
+  0xF06B: 'κ',
+  0xF06C: 'λ',
+  0xF06D: 'μ',
+  0xF06E: 'ν',
+  0xF06F: 'ο',
+  0xF070: 'π',
+  0xF071: 'θ',
+  0xF072: 'ρ',
+  0xF073: 'σ',
+  0xF074: 'τ',
+  0xF075: 'υ',
+  0xF076: 'ϖ',
+  0xF077: 'ω',
+  0xF078: 'ξ',
+  0xF079: 'ψ',
+  0xF07A: 'ζ',
+  0xF07B: '{',
+  0xF07C: '|',
+  0xF07D: '}',
+  0xF07E: '~',
+  0xF0A0: ' ',
+  0xF0A1: 'ϒ',
+  0xF0A2: '′',
+  0xF0A3: '≤',
+  0xF0A4: '/',
+  0xF0A5: '∞',
+  0xF0A6: 'ƒ',
+  0xF0AB: '↔',
+  0xF0AC: '←',
+  0xF0AD: '↑',
+  0xF0AE: '→',
+  0xF0AF: '↓',
+  0xF0B0: '°',
+  0xF0B1: '±',
+  0xF0B2: '″',
+  0xF0B3: '≥',
+  0xF0B4: '×',
+  0xF0B5: '∝',
+  0xF0B6: '∂',
+  0xF0B7: '⋅',
+  0xF0B8: '÷',
+  0xF0B9: '≠',
+  0xF0BA: '≡',
+  0xF0BB: '≈',
+  0xF0BC: '…',
+  0xF0BD: '|',
+  0xF0BE: '-',
+  0xF0C0: 'ℵ',
+  0xF0C1: 'ℑ',
+  0xF0C2: 'ℜ',
+  0xF0C4: '⊗',
+  0xF0C5: '⊕',
+  0xF0C6: '∅',
+  0xF0C7: '∩',
+  0xF0C8: '∪',
+  0xF0C9: '⊃',
+  0xF0CA: '⊇',
+  0xF0CB: '⊄',
+  0xF0CC: '⊂',
+  0xF0CD: '⊆',
+  0xF0CE: '∈',
+  0xF0CF: '∉',
+  0xF0D0: '∠',
+  0xF0D1: '∇',
+  0xF0D5: '∏',
+  0xF0D6: '√',
+  0xF0D7: '⋅',
+  0xF0D8: '¬',
+  0xF0D9: '∧',
+  0xF0DA: '∨',
+  0xF0DB: '⇔',
+  0xF0DC: '⇐',
+  0xF0DD: '⇑',
+  0xF0DE: '⇒',
+  0xF0DF: '⇓',
+  0xF0E0: '◊',
+  0xF0E1: '⟨',
+  0xF0E5: '∑',
+  0xF0E6: '(',
+  0xF0E7: '',
+  0xF0E8: '(',
+  0xF0E9: '[',
+  0xF0EA: '',
+  0xF0EB: '[',
+  0xF0EC: '{',
+  0xF0ED: '{',
+  0xF0EE: '{',
+  0xF0EF: '',
+  0xF0F1: '⟩',
+  0xF0F2: '∫',
+  0xF0F3: '∫',
+  0xF0F4: '',
+  0xF0F5: '∫',
+  0xF0F6: ')',
+  0xF0F7: '',
+  0xF0F8: ')',
+  0xF0F9: ']',
+  0xF0FA: '',
+  0xF0FB: ']',
+  0xF0FC: '}',
+  0xF0FD: '}',
+  0xF0FE: '}',
+};
+
+/**
+ * Giải mã triệt để các ký tự Private Use Area (U+F000..U+F0FF, U+E000..U+F8FF) và ký tự lỗi font (▯)
+ * sinh ra từ MathType / Symbol / Equation Editor trong PDF và Word
+ */
+export function decodePdfMathSymbols(input: string): string {
+  if (!input) return '';
+  let out = '';
+  for (let i = 0; i < input.length; i++) {
+    const code = input.charCodeAt(i);
+    if (code >= 0xF020 && code <= 0xF0FF) {
+      if (code in SYMBOL_PUA_MAP) {
+        out += SYMBOL_PUA_MAP[code];
+      } else if (code >= 0xF020 && code <= 0xF07E) {
+        out += String.fromCharCode(code - 0xF000);
+      }
+    } else if (code === 0x2212) {
+      out += '-';
+    } else {
+      out += input[i];
+    }
+  }
+
+  // Nếu còn ký tự hộp lỗi font (▯, □,  hoặc PUA U+E000..U+F8FF) nằm ở vị trí dấu "=" trong công thức (VD: "Q ▯ mλΔt", "λ ▯")
+  out = out.replace(
+    /(\b[A-Za-zα-ωΑ-ΩΔλμωπρστφθ0-9]+(?:_\{?[A-Za-z0-9]+\}?|\^\{?[A-Za-z0-9+\-]+\}?)?)\s*[\uE000-\uF8FF\u25AF\u25A1\uFFFD]+\s*(?=[A-Za-zα-ωΑ-ΩΔλμωπρστφθ0-9\\\(\{\+\-\√]|$)/g,
+    '$1 = '
+  );
+
+  // Loại bỏ các ký tự PUA vô hình còn sót lại
+  out = out.replace(/[\uE000-\uF8FF]/g, '');
+
+  return out;
+}
+
 // Giải mã HTML Entities
 export function decodeHtmlEntities(str: string): string {
   if (!str) return '';
-  return str
+  return decodePdfMathSymbols(str)
     .replace(/&nbsp;/gi, ' ')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
@@ -615,7 +830,7 @@ export async function preprocessDocxXmlForMathAndImages(zip: any): Promise<{
 export function sanitizeMathContent(content: string): string {
   if (!content) return '';
 
-  let processed = content;
+  let processed = decodePdfMathSymbols(content);
 
   // 1. Chuyển đổi các khối MathML sang LaTeX
   processed = processed.replace(/<math\b[\s\S]*?<\/math>/gi, (match) => {
@@ -654,10 +869,8 @@ export function sanitizeMathContent(content: string): string {
   return processed;
 }
 
-// Bọc các lệnh LaTeX đứng trần không có $ bao quanh
-function wrapUnenclosedLatex(text: string): string {
+function applyOutsideMath(text: string, fn: (plain: string) => string): string {
   if (!text) return '';
-
   const parts: string[] = [];
   const mathRegex = /(\$\$[\s\S]*?\$\$|\$[^\$]+?\$)/g;
   let lastIndex = 0;
@@ -665,35 +878,57 @@ function wrapUnenclosedLatex(text: string): string {
 
   while ((match = mathRegex.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      parts.push(processPlainTextChunk(text.substring(lastIndex, match.index)));
+      parts.push(fn(text.substring(lastIndex, match.index)));
     }
     parts.push(match[0]);
     lastIndex = mathRegex.lastIndex;
   }
 
   if (lastIndex < text.length) {
-    parts.push(processPlainTextChunk(text.substring(lastIndex)));
+    parts.push(fn(text.substring(lastIndex)));
   }
 
   return parts.join('');
 }
 
-// Tìm và bọc các ký hiệu LaTeX độc lập trong đoạn text thường
-function processPlainTextChunk(chunk: string): string {
-  if (!chunk) return '';
+// Bọc các lệnh LaTeX đứng trần không có $ bao quanh
+function wrapUnenclosedLatex(text: string): string {
+  if (!text) return '';
 
-  let res = chunk;
+  // Bước 1: Bọc các phân số \frac{...}{...}, căn thức \sqrt{...}, vectơ \vec{...} (kèm vế trái nếu có dạng Q = \frac{...}{...})
+  let res = applyOutsideMath(text, (chunk) =>
+    chunk.replace(
+      /(?:([A-Za-zα-ωΑ-ΩΔλμωπρστφθ0-9]+(?:_\{[^{}]*\}|\^\{[^{}]*\}|_[A-Za-z0-9]+|\^[A-Za-z0-9+\-]+)?\s*=\s*(?:[-+±]\s*)?))?(\\(?:frac|sqrt|vec|overline|hat|widetilde|dot|ddot|underline)\s*(?:\[[^\]]*\])?\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}(?:\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})?)/g,
+      (_, lhs, cmd) => (lhs ? `$${lhs.trim()} ${cmd}$` : `$${cmd}$`)
+    )
+  );
 
-  // Nhận diện \frac{...}{...}, \sqrt{...}, \sqrt[...]{...}, \vec{...}, \overline{...}
-  res = res.replace(/(\\(?:frac|sqrt|vec|overline|hat|widetilde|dot|ddot|underline)\s*(?:\[[^\]]*\])?\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}(?:\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})?)/g, '$$$1$$');
+  // Bước 2: Bọc tích phân \int, tổng \sum, giới hạn \lim
+  res = applyOutsideMath(res, (chunk) =>
+    chunk.replace(
+      /(\\(?:int|sum|prod|lim|bigcup|bigcap)(?:_\{[^{}]*\}|\^\{[^{}]*\}|_[a-zA-Z0-9]+|\^[a-zA-Z0-9]+)*)/g,
+      '$$$1$$'
+    )
+  );
 
-  // Nhận diện \int_{...}^{...}, \sum_{...}^{...}, \lim_{...}
-  res = res.replace(/(\\(?:int|sum|prod|lim|bigcup|bigcap)(?:_\{[^{}]*\}|\^\{[^{}]*\}|_[a-zA-Z0-9]+|\^[a-zA-Z0-9]+)*)/g, '$$$1$$');
+  // Bước 3: Bọc các biểu thức có số mũ hoặc chỉ số dưới dạng x^{2}, 10^{-6}, Q_{1}, v_{0} đứng ngoài $...$
+  res = applyOutsideMath(res, (chunk) =>
+    chunk.replace(
+      /([A-Za-z0-9α-ωΑ-ΩΔλμωπρστφθ\)]+(?:_\{[^{}]+\}|\^\{[^{}]+\}|_[0-9a-zA-Z]+|\^[0-9a-zA-Z+\-]+)+)/g,
+      '$$$1$$'
+    )
+  );
 
-  // Nhận diện các chữ cái Hy Lạp đứng độc lập có dấu gạch chéo: \alpha, \beta, \gamma, \Delta, \pi, \theta, \lambda, \mu, \sigma, \omega
-  res = res.replace(/(\\(?:alpha|beta|gamma|Delta|delta|pi|theta|lambda|mu|sigma|omega|phi|psi|rho|tau|eta|chi|xi|zeta|Omega|Theta|Phi|Psi|Gamma|Lambda|Sigma)\b)/g, '$$$1$$');
+  // Bước 4: Bọc các chữ cái Hy Lạp LaTeX đứng độc lập: \alpha, \beta, \gamma, \Delta, \pi, \theta, \lambda, \mu, \sigma, \omega
+  res = applyOutsideMath(res, (chunk) =>
+    chunk.replace(
+      /(\\(?:alpha|beta|gamma|Delta|delta|pi|theta|lambda|mu|sigma|omega|phi|psi|rho|tau|eta|chi|xi|zeta|Omega|Theta|Phi|Psi|Gamma|Lambda|Sigma)\b)/g,
+      '$$$1$$'
+    )
+  );
 
-  // Tránh việc bọc trùng lặp như $$$...$$$
+  // Gộp các khối $...$ liền kề nếu cùng một biểu thức toán học
+  res = res.replace(/\$\s*\$(?![\$])/g, ' ');
   res = res.replace(/\${3,}/g, '$$');
 
   return res;

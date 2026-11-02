@@ -24,7 +24,14 @@ import {
   Calendar
 } from 'lucide-react';
 import { MathText } from '../components/MathText';
-import { DEFAULT_SAMPLE_QUESTIONS, DEFAULT_SECTION_POINTS, QuestionItem, SectionPointsConfig } from '../data/sampleQuestions';
+import {
+  DEFAULT_SAMPLE_QUESTIONS,
+  DEFAULT_SECTION_POINTS,
+  QuestionItem,
+  SectionPointsConfig,
+  resolveSectionScoring,
+  formatPointBadge
+} from '../data/sampleQuestions';
 
 export interface ViolationLogItem {
   time: string;
@@ -463,26 +470,56 @@ export default function ExamTest() {
 
   // 7. Score Calculation
   const calculateResult = () => {
-    const pts: SectionPointsConfig = examData?.sectionPoints || DEFAULT_SECTION_POINTS;
+    const rawPts: SectionPointsConfig =
+      session?.sectionPoints || examData?.sectionPoints || DEFAULT_SECTION_POINTS;
     const questions: QuestionItem[] = examData?.questions || DEFAULT_SAMPLE_QUESTIONS;
+
+    const p1Questions = questions.filter(
+      (q) =>
+        q.section?.startsWith('Phần I') &&
+        !q.section?.startsWith('Phần II') &&
+        !q.section?.startsWith('Phần III')
+    );
+    const p2Questions = questions.filter(
+      (q) => q.section?.startsWith('Phần II') && !q.section?.startsWith('Phần III')
+    );
+    const p3Questions = questions.filter((q) => q.section?.startsWith('Phần III'));
+
+    const resolved = resolveSectionScoring(rawPts, {
+      p1Count: p1Questions.length,
+      p2Count: p2Questions.length,
+      p3Count: p3Questions.length
+    });
 
     let part1Score = 0;
     let part2Score = 0;
     let part3Score = 0;
 
-    const p1Questions = questions.filter(q => q.section?.startsWith('Phần I') && !q.section?.startsWith('Phần II') && !q.section?.startsWith('Phần III'));
-    const p2Questions = questions.filter(q => q.section?.startsWith('Phần II') && !q.section?.startsWith('Phần III'));
-    const p3Questions = questions.filter(q => q.section?.startsWith('Phần III'));
-
     // Part I scoring
+    let p1CorrectCount = 0;
     p1Questions.forEach((q, i) => {
       const userAns = answers[`Phần I-${i}`];
-      if (userAns && q.correctAnswer && userAns.trim().toUpperCase() === q.correctAnswer.trim().toUpperCase()) {
-        part1Score += pts.p1;
+      if (
+        userAns &&
+        q.correctAnswer &&
+        userAns.trim().toUpperCase() === q.correctAnswer.trim().toUpperCase()
+      ) {
+        p1CorrectCount++;
       }
     });
 
+    if (
+      resolved.mode === 'custom_section' &&
+      resolved.allocation === 'section_total' &&
+      p1Questions.length > 0
+    ) {
+      part1Score = (p1CorrectCount / p1Questions.length) * resolved.totalP1;
+    } else {
+      part1Score = p1CorrectCount * resolved.p1PerQ;
+    }
+
     // Part II scoring
+    let p2AllFourCorrectCount = 0;
     p2Questions.forEach((q, i) => {
       const userAnsObj = answers[`Phần II-${i}`] || {};
       const answerStr = (q.correctAnswer || '').toLowerCase();
@@ -501,13 +538,26 @@ export default function ExamTest() {
         }
       });
 
-      if (matchCount === 1) part2Score += pts.p2.opt1;
-      else if (matchCount === 2) part2Score += pts.p2.opt2;
-      else if (matchCount === 3) part2Score += pts.p2.opt3;
-      else if (matchCount === 4) part2Score += pts.p2.opt4;
+      if (matchCount === 1) part2Score += resolved.p2Opts.opt1;
+      else if (matchCount === 2) part2Score += resolved.p2Opts.opt2;
+      else if (matchCount === 3) part2Score += resolved.p2Opts.opt3;
+      else if (matchCount === 4) {
+        part2Score += resolved.p2Opts.opt4;
+        p2AllFourCorrectCount++;
+      }
     });
 
+    if (
+      resolved.mode === 'custom_section' &&
+      resolved.allocation === 'section_total' &&
+      p2Questions.length > 0 &&
+      p2AllFourCorrectCount === p2Questions.length
+    ) {
+      part2Score = resolved.totalP2;
+    }
+
     // Part III scoring
+    let p3CorrectCount = 0;
     p3Questions.forEach((q, i) => {
       const userAns = (answers[`Phần III-${i}`] || '').trim();
       const correctAns = (q.correctAnswer || '').trim();
@@ -516,18 +566,29 @@ export default function ExamTest() {
         const normUser = userAns.toLowerCase().replace(/\s+/g, ' ').replace(',', '.');
         const normCorrect = correctAns.toLowerCase().replace(/\s+/g, ' ').replace(',', '.');
 
-        const isMatch = normUser === normCorrect ||
+        const isMatch =
+          normUser === normCorrect ||
           parseFloat(normUser) === parseFloat(normCorrect) ||
           normUser.replace(/[^\d.-]/g, '') === normCorrect.replace(/[^\d.-]/g, '');
 
         if (isMatch) {
-          part3Score += pts.p3;
+          p3CorrectCount++;
         }
       }
     });
 
+    if (
+      resolved.mode === 'custom_section' &&
+      resolved.allocation === 'section_total' &&
+      p3Questions.length > 0
+    ) {
+      part3Score = (p3CorrectCount / p3Questions.length) * resolved.totalP3;
+    } else {
+      part3Score = p3CorrectCount * resolved.p3PerQ;
+    }
+
     const total = Math.round((part1Score + part2Score + part3Score) * 100) / 100;
-    const maxScore = Math.round((p1Questions.length * pts.p1 + p2Questions.length * pts.p2.opt4 + p3Questions.length * pts.p3) * 100) / 100;
+    const maxScore = resolved.totalExam;
 
     return {
       total,
@@ -818,7 +879,15 @@ export default function ExamTest() {
             </div>
             <div className="flex justify-between items-center text-teal-800">
               <span>Số lượng câu hỏi:</span>
-              <span className="font-bold">28 câu (18 trắc nghiệm - 4 đúng/sai - 6 ngắn)</span>
+              <span className="font-bold">
+                {(() => {
+                  const qList: QuestionItem[] = examData?.questions || DEFAULT_SAMPLE_QUESTIONS;
+                  const c1 = qList.filter(q => q.section?.startsWith('Phần I') && !q.section?.startsWith('Phần II') && !q.section?.startsWith('Phần III')).length;
+                  const c2 = qList.filter(q => q.section?.startsWith('Phần II') && !q.section?.startsWith('Phần III')).length;
+                  const c3 = qList.filter(q => q.section?.startsWith('Phần III')).length;
+                  return `${qList.length} câu (${c1} trắc nghiệm - ${c2} đúng/sai - ${c3} ngắn)`;
+                })()}
+              </span>
             </div>
             <div className="flex justify-between items-center text-teal-800">
               <span>Lớp học:</span>
@@ -928,11 +997,24 @@ export default function ExamTest() {
 
   // Screen 2: Exam Taking / Result Interface
   const questions: QuestionItem[] = examData?.questions || DEFAULT_SAMPLE_QUESTIONS;
-  const pts: SectionPointsConfig = examData?.sectionPoints || DEFAULT_SECTION_POINTS;
+  const rawPts: SectionPointsConfig =
+    session?.sectionPoints || examData?.sectionPoints || DEFAULT_SECTION_POINTS;
 
   const part1Questions = questions.filter(q => q.section?.startsWith('Phần I') && !q.section?.startsWith('Phần II') && !q.section?.startsWith('Phần III'));
   const part2Questions = questions.filter(q => q.section?.startsWith('Phần II') && !q.section?.startsWith('Phần III'));
   const part3Questions = questions.filter(q => q.section?.startsWith('Phần III'));
+
+  const resolvedPts = resolveSectionScoring(rawPts, {
+    p1Count: part1Questions.length,
+    p2Count: part2Questions.length,
+    p3Count: part3Questions.length
+  });
+  const pts: SectionPointsConfig = {
+    ...rawPts,
+    p1: resolvedPts.p1PerQ,
+    p2: resolvedPts.p2Opts,
+    p3: resolvedPts.p3PerQ
+  };
 
   const candidateName = selectedStudent
     ? studentList.find(s => s.id === selectedStudent)?.name || 'Học sinh'
@@ -1414,7 +1496,7 @@ export default function ExamTest() {
                 PHẦN I. Câu hỏi trắc nghiệm nhiều phương án lựa chọn. Thí sinh trả lời từ câu 1 đến câu {part1Questions.length}. Mỗi câu hỏi thí sinh chỉ chọn một phương án.
               </h2>
               <div className="text-[11px] text-teal-200">
-                Cấu hình: Mỗi câu đúng được <span className="font-bold text-yellow-300">{pts.p1} điểm</span>.
+                Cấu hình Phần I ({resolvedPts.totalP1} điểm): Mỗi câu đúng được <span className="font-bold text-yellow-300">{formatPointBadge(pts.p1)} điểm</span>.
               </div>
             </div>
 
@@ -1443,7 +1525,7 @@ export default function ExamTest() {
                           Câu {idx + 1}
                         </span>
                         <span className="text-xs font-semibold text-teal-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                          ({pts.p1} điểm)
+                          ({formatPointBadge(pts.p1)} điểm)
                         </span>
                       </div>
 
@@ -1451,7 +1533,7 @@ export default function ExamTest() {
                         <div className="text-xs font-bold">
                           {isCorrect && (
                             <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">
-                              <Check className="w-3.5 h-3.5" /> +{pts.p1} đ
+                              <Check className="w-3.5 h-3.5" /> +{formatPointBadge(pts.p1)} đ
                             </span>
                           )}
                           {isWrong && (
@@ -1554,7 +1636,7 @@ export default function ExamTest() {
                 PHẦN II. Câu trắc nghiệm đúng sai. Thí sinh trả lời từ câu 1 đến câu {part2Questions.length}. Trong mỗi ý a, b, c, d ở mỗi câu, thí sinh chọn đúng hoặc sai.
               </h2>
               <div className="text-[11px] text-teal-200">
-                Cấu hình thang điểm: Đúng 1 ý: <span className="font-bold text-yellow-300">{pts.p2.opt1}đ</span>, Đúng 2 ý: <span className="font-bold text-yellow-300">{pts.p2.opt2}đ</span>, Đúng 3 ý: <span className="font-bold text-yellow-300">{pts.p2.opt3}đ</span>, Đúng 4 ý: <span className="font-bold text-yellow-300">{pts.p2.opt4}đ</span>.
+                Cấu hình Phần II ({resolvedPts.totalP2} điểm): Đúng 1 ý: <span className="font-bold text-yellow-300">{formatPointBadge(pts.p2.opt1)}đ</span>, Đúng 2 ý: <span className="font-bold text-yellow-300">{formatPointBadge(pts.p2.opt2)}đ</span>, Đúng 3 ý: <span className="font-bold text-yellow-300">{formatPointBadge(pts.p2.opt3)}đ</span>, Đúng 4 ý: <span className="font-bold text-yellow-300">{formatPointBadge(pts.p2.opt4)}đ</span>.
               </div>
             </div>
 
@@ -1586,13 +1668,13 @@ export default function ExamTest() {
                           Câu {idx + 1}
                         </span>
                         <span className="text-xs font-semibold text-teal-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                          (Tối đa {pts.p2.opt4} điểm: 1 ý {pts.p2.opt1}đ, 2 ý {pts.p2.opt2}đ, 3 ý {pts.p2.opt3}đ, 4 ý {pts.p2.opt4}đ)
+                          (Tối đa {formatPointBadge(pts.p2.opt4)} điểm: 1 ý {formatPointBadge(pts.p2.opt1)}đ, 2 ý {formatPointBadge(pts.p2.opt2)}đ, 3 ý {formatPointBadge(pts.p2.opt3)}đ, 4 ý {formatPointBadge(pts.p2.opt4)}đ)
                         </span>
                       </div>
 
                       {submitted && (
                         <div className="text-xs font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">
-                          Đúng {matchCount}/4 ý: +{earnedScore} đ
+                          Đúng {matchCount}/4 ý: +{formatPointBadge(earnedScore)} đ
                         </div>
                       )}
                     </div>
@@ -1705,7 +1787,7 @@ export default function ExamTest() {
                 PHẦN III. Câu trắc nghiệm yêu cầu trả lời ngắn. Thí sinh trả lời từ câu 1 đến câu {part3Questions.length}.
               </h2>
               <div className="text-[11px] text-teal-200">
-                Cấu hình: Mỗi câu trả lời đúng được <span className="font-bold text-yellow-300">{pts.p3} điểm</span>.
+                Cấu hình Phần III ({resolvedPts.totalP3} điểm): Mỗi câu trả lời đúng được <span className="font-bold text-yellow-300">{formatPointBadge(pts.p3)} điểm</span>.
               </div>
             </div>
 
@@ -1742,7 +1824,7 @@ export default function ExamTest() {
                           Câu {idx + 1}
                         </span>
                         <span className="text-xs font-semibold text-teal-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                          ({pts.p3} điểm)
+                          ({formatPointBadge(pts.p3)} điểm)
                         </span>
                       </div>
 
@@ -1750,7 +1832,7 @@ export default function ExamTest() {
                         <div className="text-xs font-bold">
                           {isMatch ? (
                             <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-md">
-                              <Check className="w-3.5 h-3.5" /> +{pts.p3} đ
+                              <Check className="w-3.5 h-3.5" /> +{formatPointBadge(pts.p3)} đ
                             </span>
                           ) : (
                             <span className="inline-flex items-center gap-1 text-rose-700 bg-rose-100 px-2 py-0.5 rounded-md">

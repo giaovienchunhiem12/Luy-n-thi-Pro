@@ -125,24 +125,69 @@ export async function compressHtmlImages(html: string): Promise<string> {
 }
 
 /**
- * Nén toàn bộ hình ảnh trong danh sách câu hỏi trước khi lưu vào Firestore
+ * Loại bỏ đệ quy toàn bộ các thuộc tính có giá trị undefined trong object/array
+ * để tránh lỗi "Unsupported field value: undefined" của Firebase Firestore
+ */
+export function sanitizeForFirestore<T>(data: T): T {
+  if (data === null || data === undefined) {
+    return null as unknown as T;
+  }
+  if (Array.isArray(data)) {
+    return data
+      .filter((item) => item !== undefined)
+      .map((item) => sanitizeForFirestore(item)) as unknown as T;
+  }
+  if (typeof data === 'object') {
+    // Giữ nguyên các đối tượng đặc biệt của Firestore như FieldValue (serverTimestamp) hoặc Date
+    const proto = Object.getPrototypeOf(data);
+    if (proto && proto !== Object.prototype) {
+      return data;
+    }
+    const cleaned: Record<string, any> = {};
+    for (const [key, value] of Object.entries(data as Record<string, any>)) {
+      if (value !== undefined) {
+        cleaned[key] = sanitizeForFirestore(value);
+      }
+    }
+    return cleaned as T;
+  }
+  return data;
+}
+
+/**
+ * Nén toàn bộ hình ảnh trong danh sách câu hỏi và làm sạch dữ liệu trước khi lưu vào Firestore
  */
 export async function compressExamQuestions(questions: any[]): Promise<any[]> {
   if (!questions || !Array.isArray(questions) || questions.length === 0) {
-    return questions;
+    return [];
   }
 
   const processedQuestions = await Promise.all(
     questions.map(async (q) => {
-      const updated = { ...q };
+      const updated: Record<string, any> = {
+        questionText: String(q.questionText || ''),
+        options: Array.isArray(q.options) ? q.options.map((o: any) => String(o ?? '')) : [],
+        correctAnswer: String(q.correctAnswer ?? ''),
+        section: String(q.section || 'Phần I - Câu 1'),
+        sectionGroup: String(q.sectionGroup || ''),
+        questionType: String(q.questionType || 'trắc nghiệm'),
+        solution: String(q.solution || ''),
+      };
 
-      // Nén ảnh đính kèm imageUrl nếu có
-      if (updated.imageUrl && updated.imageUrl.startsWith('data:image')) {
-        updated.imageUrl = await compressBase64Image(updated.imageUrl, 800, 600, 0.75);
+      if (q.imageUrl && typeof q.imageUrl === 'string' && q.imageUrl.trim()) {
+        updated.imageUrl = q.imageUrl.startsWith('data:image')
+          ? await compressBase64Image(q.imageUrl, 800, 600, 0.72)
+          : q.imageUrl;
+      }
+
+      if (q.questionTextAfter && typeof q.questionTextAfter === 'string' && q.questionTextAfter.trim()) {
+        updated.questionTextAfter = q.questionTextAfter.includes('data:image')
+          ? await compressHtmlImages(q.questionTextAfter)
+          : q.questionTextAfter;
       }
 
       // Nén ảnh inline trong nội dung câu hỏi
-      if (updated.questionText && updated.questionText.includes('data:image')) {
+      if (updated.questionText.includes('data:image')) {
         updated.questionText = await compressHtmlImages(updated.questionText);
       }
 
@@ -159,11 +204,11 @@ export async function compressExamQuestions(questions: any[]): Promise<any[]> {
       }
 
       // Nén ảnh trong lời giải chi tiết
-      if (updated.solution && updated.solution.includes('data:image')) {
+      if (updated.solution.includes('data:image')) {
         updated.solution = await compressHtmlImages(updated.solution);
       }
 
-      return updated;
+      return sanitizeForFirestore(updated);
     })
   );
 

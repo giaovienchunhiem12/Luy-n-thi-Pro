@@ -9,7 +9,19 @@ export interface QuestionItem {
   solution?: string;
 }
 
+export type ScoringMode = 'standard_2025' | 'custom_section';
+export type SectionAllocationMethod = 'per_question' | 'section_total';
+export type Part2SubItemDistribution = 'progressive' | 'equal' | 'custom';
+
 export interface SectionPointsConfig {
+  scoringMode?: ScoringMode; // 'standard_2025' (Mặc định chuẩn Form 2025) | 'custom_section' (Tùy chỉnh điểm từng phần cho đề tùy ý số câu)
+  allocationMethod?: SectionAllocationMethod; // 'section_total' (Nhập tổng điểm từng phần -> tự chia theo số câu) | 'per_question' (Nhập điểm từng câu trong mỗi phần)
+  p2Distribution?: Part2SubItemDistribution; // 'progressive' (10%-25%-50%-100%) | 'equal' (25%-50%-75%-100%) | 'custom' (Tự nhập từng mức)
+  // Tổng điểm từng phần (dùng khi cấu hình theo tổng điểm phần cho đề tùy ý số câu)
+  p1TotalPoints?: number;
+  p2TotalPoints?: number;
+  p3TotalPoints?: number;
+  // Điểm chi tiết từng câu (luôn được đồng bộ để tương thích ngược 100% với Form chuẩn)
   p1: number;
   p2: {
     opt1: number;
@@ -21,6 +33,12 @@ export interface SectionPointsConfig {
 }
 
 export const DEFAULT_SECTION_POINTS: SectionPointsConfig = {
+  scoringMode: 'standard_2025',
+  allocationMethod: 'per_question',
+  p2Distribution: 'progressive',
+  p1TotalPoints: 4.5,
+  p2TotalPoints: 4.0,
+  p3TotalPoints: 1.5,
   p1: 0.25,
   p2: {
     opt1: 0.1,
@@ -30,6 +48,121 @@ export const DEFAULT_SECTION_POINTS: SectionPointsConfig = {
   },
   p3: 0.25
 };
+
+/**
+ * Tính toán điểm chuẩn hóa cho từng câu và tổng điểm từng phần dựa trên số lượng câu hỏi thực tế của đề
+ */
+export function resolveSectionScoring(
+  rawConfig: SectionPointsConfig | undefined,
+  counts: { p1Count: number; p2Count: number; p3Count: number }
+) {
+  const cfg: SectionPointsConfig = {
+    ...DEFAULT_SECTION_POINTS,
+    ...(rawConfig || {}),
+    p2: {
+      ...DEFAULT_SECTION_POINTS.p2,
+      ...(rawConfig?.p2 || {})
+    }
+  };
+
+  const mode: ScoringMode = cfg.scoringMode || 'standard_2025';
+  const allocation: SectionAllocationMethod = cfg.allocationMethod || 'per_question';
+  const p2Dist: Part2SubItemDistribution = cfg.p2Distribution || 'progressive';
+
+  const { p1Count, p2Count, p3Count } = counts;
+
+  if (mode === 'standard_2025') {
+    const p1PerQ = Number(cfg.p1) || 0.25;
+    const p2Opt1 = Number(cfg.p2?.opt1) ?? 0.1;
+    const p2Opt2 = Number(cfg.p2?.opt2) ?? 0.25;
+    const p2Opt3 = Number(cfg.p2?.opt3) ?? 0.5;
+    const p2Opt4 = Number(cfg.p2?.opt4) ?? 1.0;
+    const p3PerQ = Number(cfg.p3) || 0.25;
+
+    const totalP1 = Math.round(p1Count * p1PerQ * 1000) / 1000;
+    const totalP2 = Math.round(p2Count * p2Opt4 * 1000) / 1000;
+    const totalP3 = Math.round(p3Count * p3PerQ * 1000) / 1000;
+    const totalExam = Math.round((totalP1 + totalP2 + totalP3) * 100) / 100;
+
+    return {
+      mode,
+      allocation: 'per_question' as SectionAllocationMethod,
+      p2Dist: 'progressive' as Part2SubItemDistribution,
+      p1PerQ,
+      p2PerQMax: p2Opt4,
+      p2Opts: { opt1: p2Opt1, opt2: p2Opt2, opt3: p2Opt3, opt4: p2Opt4 },
+      p3PerQ,
+      totalP1,
+      totalP2,
+      totalP3,
+      totalExam
+    };
+  }
+
+  // Chế độ 'custom_section': Cấu hình điểm từng phần cho đề tùy ý số câu hỏi
+  let p1PerQ = Number(cfg.p1) || 0.25;
+  let totalP1 = Number(cfg.p1TotalPoints) ?? Math.round(p1Count * p1PerQ * 100) / 100;
+
+  let p2PerQMax = Number(cfg.p2?.opt4) || 1.0;
+  let totalP2 = Number(cfg.p2TotalPoints) ?? Math.round(p2Count * p2PerQMax * 100) / 100;
+
+  let p3PerQ = Number(cfg.p3) || 0.25;
+  let totalP3 = Number(cfg.p3TotalPoints) ?? Math.round(p3Count * p3PerQ * 100) / 100;
+
+  if (allocation === 'section_total') {
+    p1PerQ = p1Count > 0 ? Math.round((totalP1 / p1Count) * 10000) / 10000 : 0;
+    p2PerQMax = p2Count > 0 ? Math.round((totalP2 / p2Count) * 10000) / 10000 : 0;
+    p3PerQ = p3Count > 0 ? Math.round((totalP3 / p3Count) * 10000) / 10000 : 0;
+  } else {
+    totalP1 = Math.round(p1Count * p1PerQ * 1000) / 1000;
+    totalP2 = Math.round(p2Count * p2PerQMax * 1000) / 1000;
+    totalP3 = Math.round(p3Count * p3PerQ * 1000) / 1000;
+  }
+
+  let p2Opts = {
+    opt1: Number(cfg.p2?.opt1) ?? 0.1,
+    opt2: Number(cfg.p2?.opt2) ?? 0.25,
+    opt3: Number(cfg.p2?.opt3) ?? 0.5,
+    opt4: p2PerQMax
+  };
+
+  if (p2Dist === 'progressive') {
+    p2Opts = {
+      opt1: Math.round(p2PerQMax * 0.1 * 10000) / 10000,
+      opt2: Math.round(p2PerQMax * 0.25 * 10000) / 10000,
+      opt3: Math.round(p2PerQMax * 0.5 * 10000) / 10000,
+      opt4: Math.round(p2PerQMax * 10000) / 10000
+    };
+  } else if (p2Dist === 'equal') {
+    p2Opts = {
+      opt1: Math.round(p2PerQMax * 0.25 * 10000) / 10000,
+      opt2: Math.round(p2PerQMax * 0.5 * 10000) / 10000,
+      opt3: Math.round(p2PerQMax * 0.75 * 10000) / 10000,
+      opt4: Math.round(p2PerQMax * 10000) / 10000
+    };
+  }
+
+  const totalExam = Math.round((totalP1 + totalP2 + totalP3) * 100) / 100;
+
+  return {
+    mode,
+    allocation,
+    p2Dist,
+    p1PerQ,
+    p2PerQMax,
+    p2Opts,
+    p3PerQ,
+    totalP1: Math.round(totalP1 * 100) / 100,
+    totalP2: Math.round(totalP2 * 100) / 100,
+    totalP3: Math.round(totalP3 * 100) / 100,
+    totalExam
+  };
+}
+
+export function formatPointBadge(val: number): string {
+  if (!Number.isFinite(val)) return '0';
+  return Number(val.toFixed(3)).toString();
+}
 
 export const DEFAULT_SAMPLE_QUESTIONS: QuestionItem[] = [
   // ========================================================

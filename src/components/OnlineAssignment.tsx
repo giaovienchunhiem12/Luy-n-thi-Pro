@@ -91,7 +91,16 @@ export default function OnlineAssignment() {
 
   // Form tạo phiên mới
   const [classesList, setClassesList] = useState<{ id: string; name: string }[]>([]);
-  const [examsList, setExamsList] = useState<{ id: string; title: string }[]>([]);
+  const [examsList, setExamsList] = useState<
+    {
+      id: string;
+      title: string;
+      durationMinutes?: number;
+      questionCountStr?: string;
+      sectionPoints?: any;
+      questions?: any[];
+    }[]
+  >([]);
   const [selectedExamId, setSelectedExamId] = useState('');
   const [selectedClassId, setSelectedClassId] = useState('');
   const [customSessionName, setCustomSessionName] = useState('');
@@ -121,7 +130,19 @@ export default function OnlineAssignment() {
 
     const qExams = query(collection(db, 'exams'));
     const unsubExams = onSnapshot(qExams, (snap) => {
-      setExamsList(snap.docs.map((d) => ({ id: d.id, title: d.data().title })));
+      setExamsList(
+        snap.docs.map((d) => {
+          const data = d.data();
+          return {
+            id: d.id,
+            title: data.title,
+            durationMinutes: data.durationMinutes,
+            questionCountStr: data.questionCountStr,
+            sectionPoints: data.sectionPoints,
+            questions: data.questions
+          };
+        })
+      );
     });
 
     return () => {

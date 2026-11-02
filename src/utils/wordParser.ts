@@ -14,7 +14,7 @@ if (typeof window !== 'undefined' && GlobalWorkerOptions) {
   GlobalWorkerOptions.workerSrc = pdfWorker || `https://cdn.jsdelivr.net/npm/pdfjs-dist@${currentPdfjsVersion}/build/pdf.worker.min.mjs`;
 }
 
-import { sanitizeMathContent } from './mathSanitizer';
+import { decodePdfMathSymbols, preprocessDocxXmlForMathAndImages, sanitizeMathContent } from './mathSanitizer';
 
 /**
  * Đọc kích thước thực tế của ảnh PNG/JPEG từ buffer
@@ -51,12 +51,21 @@ function getImageDimensions(buf: Buffer): { width: number; height: number } {
 }
 
 /**
- * Hàm đọc file Word (.docx) chuẩn: LUÔN BẢO TOÀN VÀ HIỂN THỊ 100% TẤT CẢ HÌNH ẢNH TRONG FILE WORD
+ * Hàm đọc file Word (.docx) chuẩn: LUÔN BẢO TOÀN 100% CÔNG THỨC TOÁN (OMML/MathType) VÀ HÌNH ẢNH TRONG FILE WORD
  */
 export async function parseWordFileToHtml(arrayBuffer: ArrayBuffer): Promise<string> {
   try {
+    let targetBuffer = arrayBuffer;
+    try {
+      const loadedZip = await JSZip.loadAsync(arrayBuffer.slice(0));
+      const { zip: processedZip } = await preprocessDocxXmlForMathAndImages(loadedZip);
+      targetBuffer = await processedZip.generateAsync({ type: 'arraybuffer' });
+    } catch (zipErr) {
+      console.warn('Bỏ qua bước tiền xử lý OMML ZIP, dùng trực tiếp arrayBuffer:', zipErr);
+    }
+
     const result = await mammoth.convertToHtml(
-      { arrayBuffer },
+      { arrayBuffer: targetBuffer },
       {
         // 1. Cấu hình convertImage theo yêu cầu chuẩn xác của người dùng
         convertImage: mammoth.images.imgElement(function (image: any) {
@@ -99,7 +108,9 @@ interface PdfPositionedItem {
   y: number;
   width: number;
   height: number;
+  fontSize?: number;
   hasEOL: boolean;
+  sourceItems?: PdfPositionedItem[];
 }
 
 interface PdfReconstructedLine {
@@ -711,10 +722,334 @@ async function extractFiguresFromPdfPage(
 }
 
 /**
+ * Khôi phục cấu trúc công thức toán học 2 chiều (Phân số \frac{tử}{mẫu}, số mũ x^{n}, chỉ số dưới x_{i}, căn thức \sqrt{...}, vectơ \vec{...})
+ * từ danh sách các phần tử văn bản rời rạc trên trang PDF trước khi gom dòng
+ */
+function reconstruct2DMathInItems(rawInputItems: PdfPositionedItem[]): PdfPositionedItem[] {
+  if (!rawInputItems || rawInputItems.length === 0) return [];
+
+  // Khởi tạo bản sao an toàn kèm fontSize và sourceItems để bảo vệ khi lọc vùng hình vẽ
+  let items: PdfPositionedItem[] = rawInputItems
+    .filter((it) => it.str.trim().length > 0 || it.hasEOL)
+    .map((it) => ({
+      ...it,
+      str: decodePdfMathSymbols(it.str),
+      fontSize: it.fontSize || it.height || 11,
+      sourceItems: it.sourceItems ? [...it.sourceItems] : [it],
+    }));
+
+  const isOptionOrQuestionToken = (s: string): boolean => {
+    const t = s.trim();
+    return (
+      /^(?:<u>\s*)?[A-Da-d][\.\:\)](?:<\/u>)?(?:\s|$)/.test(t) ||
+      /^(?:Câu|CÂU|Bài|BÀI|PHẦN|Phần)\b/i.test(t)
+    );
+  };
+
+  const hasLongVietnameseProse = (s: string): boolean => {
+    const words = s.trim().split(/\s+/);
+    if (words.length >= 4) return true;
+    const vnMatches = s.match(/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/gi);
+    return Boolean(vnMatches && vnMatches.length >= 3 && words.length >= 2);
+  };
+
+  // Bước 1: Gom các ký tự toán học liền kề trên cùng cao độ Y (chênh lệch Y <= 1.8pt, khoảng cách X <= 4.2pt)
+  // tạo thành cụm biểu thức cục bộ (ví dụ tử số "mv", "2π", "Q1 + Q2") nhưng không nối qua nhãn đáp án A. B. C. D.
+  const mergeLocalMathClusters = (list: PdfPositionedItem[], maxGapX: number): PdfPositionedItem[] => {
+    const sorted = [...list].sort((a, b) => {
+      if (Math.abs(a.y - b.y) <= 1.8) return a.x - b.x;
+      return b.y - a.y;
+    });
+
+    const merged: PdfPositionedItem[] = [];
+    for (const item of sorted) {
+      if (!item.str.trim()) {
+        merged.push(item);
+        continue;
+      }
+      const prev = merged.length > 0 ? merged[merged.length - 1] : null;
+      if (
+        prev &&
+        prev.str.trim() &&
+        Math.abs(prev.y - item.y) <= 1.8 &&
+        Math.abs((prev.fontSize || 11) - (item.fontSize || 11)) <= 2.2 &&
+        prev.width < 90 &&
+        item.width < 90 &&
+        !isOptionOrQuestionToken(prev.str) &&
+        !isOptionOrQuestionToken(item.str) &&
+        !hasLongVietnameseProse(prev.str) &&
+        !hasLongVietnameseProse(item.str)
+      ) {
+        const gap = item.x - (prev.x + prev.width);
+        if (gap >= -2.5 && gap <= maxGapX) {
+          const needSpace = gap > 1.8 && !/\s$/.test(prev.str) && !/^\s/.test(item.str);
+          prev.str = prev.str + (needSpace ? ' ' : '') + item.str;
+          prev.width = Math.max(prev.x + prev.width, item.x + item.width) - prev.x;
+          prev.height = Math.max(prev.height, item.height);
+          prev.sourceItems = [...(prev.sourceItems || []), ...(item.sourceItems || [item])];
+          continue;
+        }
+      }
+      merged.push({ ...item, sourceItems: [...(item.sourceItems || [item])] });
+    }
+    return merged;
+  };
+
+  items = mergeLocalMathClusters(items, 4.0);
+
+  // Bước 2: Gắn dấu vectơ (\vec), căn bậc hai (\sqrt), số mũ (^{...}) và chỉ số dưới (_{...}) vào biến cơ sở
+  // 2a. Gắn căn bậc hai '√' với biểu thức ngay bên phải nó
+  items.sort((a, b) => (Math.abs(a.y - b.y) <= 4.0 ? a.x - b.x : b.y - a.y));
+  for (let i = 0; i < items.length - 1; i++) {
+    const cur = items[i];
+    const next = items[i + 1];
+    if (cur.str.trim() === '√' && next.str.trim().length > 0 && next.width < 90) {
+      const gap = next.x - (cur.x + cur.width);
+      if (gap >= -3 && gap <= 6 && Math.abs(cur.y - next.y) <= 5.5) {
+        cur.str = `\\sqrt{${next.str.trim()}}`;
+        cur.y = next.y;
+        cur.width = Math.max(cur.x + cur.width, next.x + next.width) - cur.x;
+        cur.sourceItems = [...(cur.sourceItems || []), ...(next.sourceItems || [next])];
+        items.splice(i + 1, 1);
+        i--;
+      }
+    }
+  }
+
+  // 2b. Gắn số mũ (superscript) và chỉ số dưới (subscript) vào biến cơ sở liền trước
+  // Lưu ý: Không gắn nếu phần tử nhô cao là tử số của một phân số (có mẫu số nằm thẳng hàng phía dưới)
+  const consumedIndices = new Set<number>();
+  for (let i = 0; i < items.length; i++) {
+    if (consumedIndices.has(i)) continue;
+    const base = items[i];
+    const baseTrim = base.str.trim();
+    if (!baseTrim || base.width > 120 || isOptionOrQuestionToken(baseTrim) || hasLongVietnameseProse(baseTrim)) {
+      continue;
+    }
+    // Biến cơ sở của số mũ / chỉ số dưới phải kết thúc bằng chữ cái, chữ số hoặc dấu đóng ngoặc (không bao giờ kết thúc bằng dấu =, +, -, :)
+    if (!/[A-Za-z0-9α-ωΑ-ΩΔλμωπρστφθ\)\]]$/.test(baseTrim)) {
+      continue;
+    }
+
+    // Tìm phần tử nằm ngay bên phải base có độ lệch Y của số mũ hoặc chỉ số dưới
+    for (let j = 0; j < items.length; j++) {
+      if (i === j || consumedIndices.has(j)) continue;
+      const cand = items[j];
+      const candTrim = cand.str.trim();
+      if (!candTrim || candTrim.length > 8 || cand.width > 42 || isOptionOrQuestionToken(candTrim) || hasLongVietnameseProse(candTrim)) {
+        continue;
+      }
+
+      const gapX = cand.x - (base.x + base.width);
+      if (gapX < -2.5 || gapX > 5.0) continue;
+
+      const dy = cand.y - base.y;
+      const baseFs = base.fontSize || 11;
+      const candFs = cand.fontSize || 11;
+      const candCenterX = cand.x + cand.width / 2;
+
+      // Kiểm tra xem cand có phải là tử số hoặc mẫu số của một phân số không
+      const isPartOfVerticalFraction = items.some((other, k) => {
+        if (k === i || k === j || consumedIndices.has(k)) return false;
+        const otherCenterX = other.x + other.width / 2;
+        if (Math.abs(otherCenterX - candCenterX) > Math.max(cand.width, other.width) * 0.7 + 6) return false;
+        const vertDist = Math.abs(cand.y - other.y);
+        if (vertDist < 6.5 || vertDist > 26) return false;
+        // Nếu base.y nằm giữa cand.y và other.y thì cand và other chính là tử và mẫu của phân số!
+        const minY = Math.min(cand.y, other.y);
+        const maxY = Math.max(cand.y, other.y);
+        return base.y >= minY + 1.5 && base.y <= maxY - 1.5;
+      });
+      if (isPartOfVerticalFraction) continue;
+
+      // Trường hợp Số mũ (Superscript): cao hơn base từ 2.0pt đến 7.5pt
+      if (dy >= 2.0 && dy <= 7.5 && (candFs <= baseFs * 0.92 || /^[0-9+\-()nmkijxyz°o*'′″]+$/i.test(candTrim))) {
+        if (candTrim === '°' || ((candTrim === 'o' || candTrim === '0') && /\d$/.test(baseTrim))) {
+          base.str = `${base.str}°`;
+        } else {
+          base.str = `${base.str}^{${candTrim}}`;
+        }
+        base.width = Math.max(base.x + base.width, cand.x + cand.width) - base.x;
+        base.sourceItems = [...(base.sourceItems || []), ...(cand.sourceItems || [cand])];
+        consumedIndices.add(j);
+        break;
+      }
+
+      // Trường hợp Chỉ số dưới (Subscript): thấp hơn base từ 1.8pt đến 7.0pt
+      if (dy <= -1.8 && dy >= -7.0 && (candFs <= baseFs * 0.92 || /^[0-9+\-()abcmnpqxyzđtkminax]+$/i.test(candTrim))) {
+        base.str = `${base.str}_{${candTrim}}`;
+        base.width = Math.max(base.x + base.width, cand.x + cand.width) - base.x;
+        base.sourceItems = [...(base.sourceItems || []), ...(cand.sourceItems || [cand])];
+        consumedIndices.add(j);
+        break;
+      }
+    }
+  }
+
+  items = items.filter((_, idx) => !consumedIndices.has(idx));
+
+  // Bước 3: Gom lại một lần nữa các cụm biểu thức trên cùng cao độ Y (ví dụ "mv^{2} + 2mgh" trên tử số)
+  items = mergeLocalMathClusters(items, 4.5);
+
+  // Bước 4: Nhận diện và tái tạo PHÂN SỐ 2 CHIỀU (\frac{tử số}{mẫu số})
+  // Tìm các cặp (num, den) thẳng hàng theo chiều dọc (cùng tọa độ X) và có dòng cơ sở (anchor baseline) nằm ở giữa
+  interface FractionCandidate {
+    numIdx: number;
+    denIdx: number;
+    targetY: number;
+    score: number;
+    barIndices: number[];
+  }
+
+  const isRowContainingOptionOrQuestion = (yVal: number): boolean => {
+    return items.some(
+      (it) => Math.abs(it.y - yVal) <= 2.3 && isOptionOrQuestionToken(it.str)
+    );
+  };
+
+  const candidates: FractionCandidate[] = [];
+
+  for (let ni = 0; ni < items.length; ni++) {
+    const num = items[ni];
+    const numTrim = num.str.trim();
+    if (!numTrim || numTrim.length > 36 || num.width > 150) continue;
+    if (isOptionOrQuestionToken(numTrim) || hasLongVietnameseProse(numTrim)) continue;
+    if (/^[-–—_―=]+$/.test(numTrim)) continue;
+    if (isRowContainingOptionOrQuestion(num.y)) continue;
+
+    const numCenterX = num.x + num.width / 2;
+
+    for (let di = 0; di < items.length; di++) {
+      if (ni === di) continue;
+      const den = items[di];
+      const denTrim = den.str.trim();
+      if (!denTrim || denTrim.length > 36 || den.width > 150) continue;
+      if (isOptionOrQuestionToken(denTrim) || hasLongVietnameseProse(denTrim)) continue;
+      if (/^[-–—_―=]+$/.test(denTrim)) continue;
+      if (isRowContainingOptionOrQuestion(den.y)) continue;
+
+      const dy = num.y - den.y;
+      if (dy < 6.0 || dy > 28.0) continue;
+
+      const denCenterX = den.x + den.width / 2;
+      const maxHalfSpan = Math.max(num.width, den.width) * 0.65 + 8;
+      const centerDiffX = Math.abs(numCenterX - denCenterX);
+      if (centerDiffX > maxHalfSpan) continue;
+
+      const overlapX = Math.min(num.x + num.width, den.x + den.width) - Math.max(num.x, den.x);
+      if (overlapX < -5) continue;
+
+      const fracMinX = Math.min(num.x, den.x);
+      const fracMaxX = Math.max(num.x + num.width, den.x + den.width);
+      const midY = (num.y + den.y) / 2;
+
+      // Tìm các phần tử thanh gạch phân số (nếu PDF xuất dấu gạch phân số bằng ký tự '-' hoặc '_') nằm giữa tử và mẫu
+      const barIndices: number[] = [];
+      for (let bi = 0; bi < items.length; bi++) {
+        if (bi === ni || bi === di) continue;
+        const bItem = items[bi];
+        if (
+          bItem.y > den.y + 1.2 &&
+          bItem.y < num.y - 1.2 &&
+          /^[-–—_―]+$/.test(bItem.str.trim()) &&
+          Math.min(bItem.x + bItem.width, fracMaxX + 4) - Math.max(bItem.x, fracMinX - 4) >= 0
+        ) {
+          barIndices.push(bi);
+        }
+      }
+
+      // Tìm phần tử neo trên dòng cơ sở (anchor baseline item) nằm giữa den.y và num.y (ví dụ "C. λ =", "D. Q =", "A.")
+      let bestAnchor: PdfPositionedItem | null = null;
+      let bestAnchorDist = Infinity;
+
+      for (let ai = 0; ai < items.length; ai++) {
+        if (ai === ni || ai === di || barIndices.includes(ai)) continue;
+        const anc = items[ai];
+        if (!anc.str.trim()) continue;
+        // Anchor phải nằm nghiêm ngặt ở khoảng giữa Y của mẫu số và tử số
+        if (anc.y >= den.y + 1.8 && anc.y <= num.y - 1.8) {
+          // Không lấy phần tử đè trực tiếp lên chính giữa X của phân số
+          const ancOverlap = Math.min(anc.x + anc.width, fracMaxX) - Math.max(anc.x, fracMinX);
+          if (ancOverlap > 3) continue;
+
+          // Ưu tiên phần tử nằm ngay bên trái phân số trên cùng dòng (như "λ =", "Q =")
+          const horizDist = anc.x + anc.width <= fracMinX + 4
+            ? fracMinX - (anc.x + anc.width)
+            : anc.x - fracMaxX + 40;
+          const vertDistFromMid = Math.abs(anc.y - midY);
+          const combinedDist = vertDistFromMid * 8 + Math.max(0, horizDist) * 0.15;
+
+          if (combinedDist < bestAnchorDist) {
+            bestAnchorDist = combinedDist;
+            bestAnchor = anc;
+          }
+        }
+      }
+
+      if (bestAnchor) {
+        candidates.push({
+          numIdx: ni,
+          denIdx: di,
+          targetY: bestAnchor.y,
+          score: centerDiffX + bestAnchorDist,
+          barIndices,
+        });
+      } else if (barIndices.length > 0) {
+        candidates.push({
+          numIdx: ni,
+          denIdx: di,
+          targetY: items[barIndices[0]].y,
+          score: centerDiffX + 10,
+          barIndices,
+        });
+      }
+    }
+  }
+
+  // Sắp xếp các ứng viên phân số theo độ khớp tốt nhất và ghép tham lam (mỗi tử số / mẫu số chỉ ghép 1 lần)
+  candidates.sort((a, b) => a.score - b.score);
+  const usedInFraction = new Set<number>();
+  const newFractionItems: PdfPositionedItem[] = [];
+
+  for (const cand of candidates) {
+    if (usedInFraction.has(cand.numIdx) || usedInFraction.has(cand.denIdx)) continue;
+    usedInFraction.add(cand.numIdx);
+    usedInFraction.add(cand.denIdx);
+    cand.barIndices.forEach((bi) => usedInFraction.add(bi));
+
+    const num = items[cand.numIdx];
+    const den = items[cand.denIdx];
+    const fracX = Math.min(num.x, den.x);
+    const fracW = Math.max(num.x + num.width, den.x + den.width) - fracX;
+
+    newFractionItems.push({
+      str: `\\frac{${num.str.trim()}}{${den.str.trim()}}`,
+      x: fracX,
+      y: cand.targetY,
+      width: Math.max(fracW, 12),
+      height: Math.max(num.height, den.height),
+      fontSize: Math.max(num.fontSize || 11, den.fontSize || 11),
+      hasEOL: Boolean(num.hasEOL || den.hasEOL),
+      sourceItems: [
+        ...(num.sourceItems || [num]),
+        ...(den.sourceItems || [den]),
+      ],
+    });
+  }
+
+  const finalItems = items
+    .filter((_, idx) => !usedInFraction.has(idx))
+    .concat(newFractionItems);
+
+  return finalItems;
+}
+
+/**
  * Gom danh sách PdfPositionedItem thành các dòng văn bản theo tọa độ Y
  */
 function groupItemsIntoLines(items: PdfPositionedItem[]): PdfReconstructedLine[] {
-  const sortedByY = [...items].sort((a, b) => {
+  const mathReconstructedItems = reconstruct2DMathInItems(items);
+  const sortedByY = [...mathReconstructedItems].sort((a, b) => {
     if (Math.abs(a.y - b.y) <= 4.2) {
       return a.x - b.x;
     }
@@ -777,7 +1112,7 @@ function groupItemsIntoLines(items: PdfPositionedItem[]): PdfReconstructedLine[]
       prevItem = item;
     }
 
-    const cleaned = lineStr
+    const cleaned = decodePdfMathSymbols(lineStr)
       .normalize('NFC')
       .replace(/^\s*P\s*H\s*[ẦAÀ]\s*N(?=\s*(?:I{1,3}\b|[123]\b))/i, 'PHẦN')
       .replace(/^PHẦN\s+I\s+I\s+I\b/i, 'PHẦN III')
@@ -849,7 +1184,7 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
       const rawItems: PdfPositionedItem[] = [];
       for (const item of content.items as any[]) {
         if (item && typeof item.str === 'string') {
-          const str = item.str.normalize('NFC');
+          const str = decodePdfMathSymbols(item.str.normalize('NFC'));
           if (!str && !item.hasEOL) continue;
           const tx = Array.isArray(item.transform) ? item.transform : [1, 0, 0, 1, 0, 0];
           const x = typeof tx[4] === 'number' ? tx[4] : 0;
@@ -860,11 +1195,12 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
           const txScaleY = Math.hypot(tx[2] || 0, tx[3] || 0);
           const txScaleX = Math.hypot(tx[0] || 0, tx[1] || 0);
           const txH = Math.max(txScaleY > 2 ? txScaleY : 0, txScaleX > 2 ? txScaleX : 0);
-          const fontHeight = Math.max(rawH, txH, 10.5);
+          const trueFontSize = rawH > 2 ? rawH : (txH > 2 ? txH : 11);
+          const fontHeight = Math.max(trueFontSize, 10.5);
 
           const width = typeof item.width === 'number' && item.width > 0
             ? item.width
-            : str.length * fontHeight * 0.45;
+            : str.length * trueFontSize * 0.45;
 
           rawItems.push({
             str,
@@ -872,6 +1208,7 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
             y,
             width,
             height: fontHeight,
+            fontSize: trueFontSize,
             hasEOL: Boolean(item.hasEOL),
           });
         }
@@ -966,6 +1303,11 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
         ) {
           for (const it of l.items) {
             protectedItems.add(it);
+            if (it.sourceItems) {
+              for (const srcIt of it.sourceItems) {
+                protectedItems.add(srcIt);
+              }
+            }
           }
         }
       }
