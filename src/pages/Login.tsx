@@ -92,7 +92,7 @@ export default function Login() {
   useEffect(() => {
     const activeTeacher = user || safeStorage.getTeacherSession();
     if (activeTeacher) {
-      window.location.href = '/dashboard';
+      navigate('/dashboard', { replace: true });
       return;
     }
 
@@ -103,7 +103,7 @@ export default function Login() {
           if (result && result.user) {
             const u = result.user;
             loginAsTeacher(u.email || 'giasudienvan@gmail.com', u.displayName || 'Thầy Điền Văn');
-            window.location.href = '/dashboard';
+            navigate('/dashboard', { replace: true });
           }
         })
         .catch((error) => {
@@ -248,7 +248,7 @@ export default function Login() {
     try {
       const name = teacherDisplayName.trim() || 'Thầy Điền Văn';
       loginAsTeacher(email, name);
-      window.location.href = '/dashboard';
+      navigate('/dashboard', { replace: true });
     } catch (err: any) {
       setErrorMessage('Không thể đăng nhập giáo viên: ' + (err?.message || 'Lỗi không xác định'));
       setIsLoggingIn(false);
@@ -270,7 +270,9 @@ export default function Login() {
 
       if (isMobileOrTabletDevice()) {
         // Thiết bị di động (mobile/tablet/màn hình nhỏ): sử dụng signInWithRedirect
-        sessionStorage.setItem('google_auth_pending', 'true');
+        try {
+          sessionStorage.setItem('google_auth_pending', 'true');
+        } catch {}
         await signInWithRedirect(auth, provider);
       } else {
         // Máy tính desktop: sử dụng signInWithPopup
@@ -278,7 +280,7 @@ export default function Login() {
         if (result && result.user) {
           const u = result.user;
           loginAsTeacher(u.email || 'giasudienvan@gmail.com', u.displayName || 'Thầy Điền Văn');
-          window.location.href = '/dashboard';
+          navigate('/dashboard', { replace: true });
         }
       }
     } catch (error: any) {
@@ -301,7 +303,7 @@ export default function Login() {
       if (result && result.user) {
         const u = result.user;
         loginAsTeacher(u.email || 'giasudienvan@gmail.com', u.displayName || 'Thầy Điền Văn');
-        window.location.href = '/dashboard';
+        navigate('/dashboard', { replace: true });
       }
     } catch (error: any) {
       handleAuthError(error);
@@ -344,11 +346,13 @@ export default function Login() {
         if (teacherDisplayName.trim()) {
           await updateProfile(userCred.user, { displayName: teacherDisplayName.trim() });
         }
+        loginAsTeacher(teacherEmail.trim(), teacherDisplayName.trim() || 'Thầy Điền Văn');
         setInfoMessage('Đăng ký tài khoản giáo viên thành công! Đang chuyển hướng...');
-        window.location.href = '/dashboard';
+        navigate('/dashboard', { replace: true });
       } else {
-        await signInWithEmailAndPassword(auth, teacherEmail.trim(), teacherPassword);
-        window.location.href = '/dashboard';
+        const userCred = await signInWithEmailAndPassword(auth, teacherEmail.trim(), teacherPassword);
+        loginAsTeacher(userCred.user.email || teacherEmail.trim(), userCred.user.displayName || 'Thầy Điền Văn');
+        navigate('/dashboard', { replace: true });
       }
     } catch (error: any) {
       handleAuthError(error);
@@ -365,7 +369,7 @@ export default function Login() {
     setTimeout(() => setHasCopiedDomain(false), 2500);
   };
 
-  // Đăng nhập Học sinh (An toàn trên mọi trình duyệt/thiết bị di động)
+  // Đăng nhập Học sinh (An toàn trên mọi trình duyệt/thiết bị di động, đồng bộ mật khẩu qua đám mây)
   const handleStudentLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedStudent) {
@@ -381,12 +385,27 @@ export default function Login() {
     } catch {}
 
     const cleanPass = password.trim();
-    if (cleanPass !== storedPass && cleanPass !== '123') {
+    let isValidStudentPass = cleanPass === storedPass || cleanPass === '123';
+
+    if (!isValidStudentPass && cleanPass) {
+      try {
+        const passDoc = await getDoc(doc(db, 'systemConfig', 'studentPasswords'));
+        if (passDoc.exists()) {
+          const cloudMap = passDoc.data() || {};
+          const cloudPass = cloudMap[selectedStudent];
+          if (cloudPass && cleanPass === String(cloudPass).trim()) {
+            isValidStudentPass = true;
+          }
+        }
+      } catch {}
+    }
+
+    if (!isValidStudentPass) {
       setErrorMessage('Mật khẩu không đúng. Mật khẩu mặc định là 123.');
       return;
     }
     setErrorMessage(null);
-    window.location.href = `/student-dashboard?studentId=${encodeURIComponent(selectedStudent)}`;
+    navigate(`/student-dashboard?studentId=${encodeURIComponent(selectedStudent)}`);
   };
 
   return (

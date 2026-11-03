@@ -3,15 +3,28 @@ import { Buffer } from 'buffer';
 import mammoth from "mammoth";
 // @ts-ignore
 import JSZip from 'jszip';
-// @ts-ignore
-import { GlobalWorkerOptions, getDocument, version as pdfjsVersion } from 'pdfjs-dist';
-// @ts-ignore
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
-
-// Configure matching worker safely on client
-const currentPdfjsVersion = pdfjsVersion || '5.4.624';
-if (typeof window !== 'undefined' && GlobalWorkerOptions) {
-  GlobalWorkerOptions.workerSrc = pdfWorker || `https://cdn.jsdelivr.net/npm/pdfjs-dist@${currentPdfjsVersion}/build/pdf.worker.min.mjs`;
+// Tải lười (lazy-load) pdfjs-dist chỉ khi người dùng tải lên file PDF
+// giúp tránh lỗi crash bundle trên Safari iOS/iPadOS và trình duyệt di động đời cũ
+let cachedPdfjsModule: any = null;
+async function getPdfjsLib() {
+  if (!cachedPdfjsModule) {
+    // @ts-ignore
+    const pdfjs = await import('pdfjs-dist');
+    cachedPdfjsModule = pdfjs;
+    const currentPdfjsVersion = pdfjs.version || '5.4.624';
+    if (typeof window !== 'undefined' && pdfjs.GlobalWorkerOptions) {
+      try {
+        // @ts-ignore
+        const workerMod = await import('pdfjs-dist/build/pdf.worker.min.mjs?url');
+        pdfjs.GlobalWorkerOptions.workerSrc =
+          workerMod?.default ||
+          `https://cdn.jsdelivr.net/npm/pdfjs-dist@${currentPdfjsVersion}/build/pdf.worker.min.mjs`;
+      } catch {
+        pdfjs.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${currentPdfjsVersion}/build/pdf.worker.min.mjs`;
+      }
+    }
+  }
+  return cachedPdfjsModule;
 }
 
 import { decodePdfMathSymbols, preprocessDocxXmlForMathAndImages, sanitizeMathContent } from './mathSanitizer';
@@ -1191,10 +1204,9 @@ function groupItemsIntoLines(items: PdfPositionedItem[]): PdfReconstructedLine[]
  */
 export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<string> {
   try {
-    const version = pdfjsVersion || '5.4.624';
-    if (typeof window !== 'undefined' && GlobalWorkerOptions) {
-      GlobalWorkerOptions.workerSrc = pdfWorker || `https://cdn.jsdelivr.net/npm/pdfjs-dist@${version}/build/pdf.worker.min.mjs`;
-    }
+    const pdfjsLib = await getPdfjsLib();
+    const getDocument = pdfjsLib.getDocument;
+    const version = pdfjsLib.version || '5.4.624';
 
     const pdfData = new Uint8Array(arrayBuffer.slice(0));
     let pdf: any;
@@ -1207,7 +1219,7 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
       }).promise;
     } catch (workerErr) {
       console.warn("Thử lại getDocument với fallback:", workerErr);
-      pdf = await getDocument({ data: new Uint8Array(arrayBuffer.slice(0)) }).promise;
+      pdf = await getDocument({ data: new Uint8Array(arrayBuffer.slice(0)), disableWorker: true }).promise;
     }
 
     // Bước 1: Thu thập toàn bộ phần tử văn bản của các trang và nhận diện các dòng tiêu đề / chân trang lặp lại

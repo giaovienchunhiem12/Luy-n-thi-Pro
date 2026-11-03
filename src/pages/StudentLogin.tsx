@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { GraduationCap, AlertCircle, ArrowRight, ArrowLeft } from 'lucide-react';
 import { db } from '../firebase';
-import { collection, getDocs } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
 
 const DEFAULT_STUDENTS = [
   { id: 'SBD001', key: 'def_SBD001', name: 'Nguyễn Văn An (Lớp 12A1 - SBD001)' },
@@ -66,7 +66,7 @@ export default function StudentLogin() {
     setIsLoading(true);
     setErrorMessage(null);
 
-    // Xác thực mật khẩu (mặc định 123 hoặc mật khẩu học sinh đã đổi)
+    // Xác thực mật khẩu (mặc định 123 hoặc mật khẩu học sinh đã đổi trên thiết bị/đám mây)
     let storedPass = '123';
     try {
       storedPass =
@@ -76,15 +76,30 @@ export default function StudentLogin() {
     } catch {}
 
     const cleanPass = password.trim();
-    if (cleanPass !== storedPass && cleanPass !== '123') {
-        setErrorMessage('Mật khẩu không đúng. Mật khẩu mặc định là 123.');
-        setIsLoading(false);
-        return;
+    let isValidPass = cleanPass === storedPass || cleanPass === '123';
+
+    if (!isValidPass && cleanPass) {
+      try {
+        const passDoc = await getDoc(doc(db, 'systemConfig', 'studentPasswords'));
+        if (passDoc.exists()) {
+          const cloudMap = passDoc.data() || {};
+          const cloudPass = cloudMap[selectedStudent];
+          if (cloudPass && cleanPass === String(cloudPass).trim()) {
+            isValidPass = true;
+          }
+        }
+      } catch {}
+    }
+
+    if (!isValidPass) {
+      setErrorMessage('Mật khẩu không đúng. Mật khẩu mặc định là 123.');
+      setIsLoading(false);
+      return;
     }
 
     try {
       // Đăng nhập thành công, chuyển hướng đến trang học sinh
-      navigate(`/student-dashboard?studentId=${selectedStudent}`);
+      navigate(`/student-dashboard?studentId=${encodeURIComponent(selectedStudent)}`);
     } catch (error) {
       setErrorMessage('Đã xảy ra lỗi khi đăng nhập.');
     } finally {

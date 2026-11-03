@@ -602,7 +602,7 @@ export function extractLatexFromMathTypeOle(buffer: ArrayBuffer | Uint8Array): s
     if (mtefOffset === -1) {
       // Tìm xem có chuỗi ký tự toán học Unicode nào không
       const u16 = new TextDecoder('utf-16le', { fatal: false }).decode(bytes);
-      const mathRuns = u16.match(/[\p{L}\p{N}\s.,+\-*/=<>()[\]{}±≤≥≠→]{4,}/gu) || [];
+      const mathRuns = u16.match(/[A-Za-z0-9À-ỹα-ωΑ-ΩΔλμωπρστφθ\s.,+\-*/=<>()[\]{}±≤≥≠→]{4,}/g) || [];
       const candidate = mathRuns.find(r => /[=+\-*/^]/.test(r));
       return candidate ? candidate.trim() : '';
     }

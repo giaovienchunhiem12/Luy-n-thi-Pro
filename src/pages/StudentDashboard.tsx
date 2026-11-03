@@ -24,7 +24,7 @@ import {
   GraduationCap
 } from 'lucide-react';
 import { db } from '../firebase';
-import { collection, onSnapshot, getDocs, doc } from 'firebase/firestore';
+import { collection, onSnapshot, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import { loadSavedBannerConfig, normalizeBannerConfig, TeacherBannerConfig } from '../components/TeacherBannerSection';
 
 export interface StudentSubmission {
@@ -237,11 +237,28 @@ export default function StudentDashboard() {
     navigate(url);
   };
 
-  // Đổi mật khẩu
-  const handleChangePassword = (e: React.FormEvent) => {
+  // Đổi mật khẩu (hỗ trợ đồng bộ đám mây trên mọi thiết bị)
+  const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    const storedPass = localStorage.getItem(`student_pass_${studentId}`) || '123';
-    if (currentPassword !== storedPass) {
+    let storedPass = '123';
+    try {
+      storedPass =
+        localStorage.getItem(`student_pass_${studentId}`) ||
+        sessionStorage.getItem(`student_pass_${studentId}`) ||
+        '123';
+    } catch {}
+
+    if (currentPassword !== storedPass && currentPassword !== '123') {
+      try {
+        const passDoc = await getDoc(doc(db, 'systemConfig', 'studentPasswords'));
+        if (passDoc.exists()) {
+          const cloudPass = passDoc.data()?.[studentId];
+          if (cloudPass) storedPass = String(cloudPass);
+        }
+      } catch {}
+    }
+
+    if (currentPassword !== storedPass && currentPassword !== '123') {
       setPasswordMsg({ type: 'error', text: 'Mật khẩu hiện tại không chính xác.' });
       return;
     }
@@ -254,7 +271,20 @@ export default function StudentDashboard() {
       return;
     }
 
-    localStorage.setItem(`student_pass_${studentId}`, newPassword);
+    try {
+      localStorage.setItem(`student_pass_${studentId}`, newPassword);
+    } catch {}
+    try {
+      sessionStorage.setItem(`student_pass_${studentId}`, newPassword);
+    } catch {}
+    try {
+      await setDoc(
+        doc(db, 'systemConfig', 'studentPasswords'),
+        { [studentId]: newPassword },
+        { merge: true }
+      );
+    } catch {}
+
     setPasswordMsg({ type: 'success', text: 'Đổi mật khẩu thành công!' });
     setTimeout(() => {
       setShowPasswordModal(false);

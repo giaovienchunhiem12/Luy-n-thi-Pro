@@ -237,7 +237,13 @@ export function repairDetachedFractionsInQuestion<T extends {
       .replace(/(?:^|[\r\n\s])(?:Đáp\s*án|Đáp\s*số|Kết\s*quả)\s*[:=\-\.]?\s*$/i, '')
       .trim();
 
-    const subMatches = Array.from(cleanStemCandidate.matchAll(/(?<=^|[\r\n\s])([a-d])[\.\)]\s+/g));
+    const rawSubMatches = Array.from(cleanStemCandidate.matchAll(/(?:^|([\r\n\s]))([a-d])[\.\)]\s+/g));
+    const subMatches: RegExpMatchArray[] = rawSubMatches.map((m) => {
+      const leadLen = m[1] ? m[1].length : 0;
+      const adjusted = [m[0].slice(leadLen), m[2]] as unknown as RegExpMatchArray;
+      adjusted.index = (m.index || 0) + leadLen;
+      return adjusted;
+    });
     const aIdx = subMatches.findIndex((m) => m[1] === 'a');
     if (aIdx !== -1) {
       const aM = subMatches[aIdx];

@@ -1,8 +1,10 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>Luyện Thi Pro</title>
     <meta name="description" content="Hệ thống quản lý lớp học và luyện thi trực tuyến." />
     <meta property="og:title" content="Luyện Thi Pro" />
@@ -10,6 +12,63 @@
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+    <script>
+      // Polyfill tương thích đa thiết bị (iPhone, iPad, Android, Máy tính bảng, Laptop đời cũ, WebView Zalo/Messenger)
+      (function () {
+        if (typeof window !== 'undefined' && typeof window.globalThis === 'undefined') {
+          window.globalThis = window;
+        }
+        if (typeof Promise !== 'undefined' && typeof Promise.withResolvers !== 'function') {
+          Promise.withResolvers = function () {
+            var resolve, reject;
+            var promise = new Promise(function (res, rej) {
+              resolve = res;
+              reject = rej;
+            });
+            return { promise: promise, resolve: resolve, reject: reject };
+          };
+        }
+        if (typeof Object.hasOwn !== 'function') {
+          Object.hasOwn = function (obj, prop) {
+            return Object.prototype.hasOwnProperty.call(obj, prop);
+          };
+        }
+        if (!Array.prototype.at) {
+          Array.prototype.at = function (n) {
+            n = Math.trunc(n) || 0;
+            if (n < 0) n += this.length;
+            if (n < 0 || n >= this.length) return undefined;
+            return this[n];
+          };
+        }
+        if (!String.prototype.at) {
+          String.prototype.at = function (n) {
+            n = Math.trunc(n) || 0;
+            if (n < 0) n += this.length;
+            if (n < 0 || n >= this.length) return undefined;
+            return this.charAt(n);
+          };
+        }
+        if (!Array.prototype.toSorted) {
+          Array.prototype.toSorted = function (compareFn) {
+            return this.slice().sort(compareFn);
+          };
+        }
+        if (!Array.prototype.toReversed) {
+          Array.prototype.toReversed = function () {
+            return this.slice().reverse();
+          };
+        }
+        if (!String.prototype.replaceAll) {
+          String.prototype.replaceAll = function (search, replacement) {
+            if (search instanceof RegExp) {
+              return this.replace(search, replacement);
+            }
+            return this.split(String(search)).join(String(replacement));
+          };
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
