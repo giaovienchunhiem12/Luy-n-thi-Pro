@@ -21,7 +21,10 @@ import {
   Lock,
   CameraOff,
   Copy,
-  Calendar
+  Calendar,
+  ChevronDown,
+  ChevronUp,
+  LayoutGrid
 } from 'lucide-react';
 import { MathText } from '../components/MathText';
 import {
@@ -88,6 +91,15 @@ export default function ExamTest() {
   const [showSubmitConfirmModal, setShowSubmitConfirmModal] = useState<boolean>(false);
   const [showResetConfirmModal, setShowResetConfirmModal] = useState<boolean>(false);
   const [isSubmittingExam, setIsSubmittingExam] = useState<boolean>(false);
+  const [showQuestionPalette, setShowQuestionPalette] = useState<boolean>(false);
+
+  const scrollToQuestion = (elementId: string) => {
+    const el = document.getElementById(elementId);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    setShowQuestionPalette(false);
+  };
 
   // Trigger floating alert toast
   const triggerToastWarning = (msg: string) => {
@@ -1206,14 +1218,13 @@ export default function ExamTest() {
       )}
 
       {/* ========================================================= */}
-      {/* FIXED TOP HEADER: TIÊU ĐỀ, ĐỒNG HỒ & TRẠNG THÁI GIÁM SÁT   */}
+      {/* THÔNG TIN ĐỀ THI & GIÁM SÁT (TỰ ĐỘNG CUỘN GỌN LÊN TRÊN)    */}
       {/* ========================================================= */}
-      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-gray-200 shadow-xs px-4 md:px-8 py-3">
-        <div className="max-w-5xl mx-auto flex items-center justify-between gap-4">
-          {/* Thông tin đề thi & Giám sát */}
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="text-sm md:text-base font-bold text-gray-900 truncate">
+      <div className="bg-white border-b border-gray-100 px-3 sm:px-6 md:px-8 pt-2.5 pb-2">
+        <div className="max-w-5xl mx-auto space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <h1 className="text-xs sm:text-sm md:text-base font-bold text-gray-900 truncate">
                 {session?.examTitle || examData?.title}
               </h1>
               {!submitted && (
@@ -1223,108 +1234,315 @@ export default function ExamTest() {
                 </span>
               )}
             </div>
-
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-gray-500 mt-0.5">
-              <span className="font-medium text-teal-800">
-                Thí sinh: <span className="font-bold text-gray-800">{candidateName}</span>
+            {!submitted && (
+              <span className={`text-[11px] font-semibold shrink-0 ${tabSwitchCount > 0 ? 'text-rose-600 font-bold' : 'text-gray-500'}`}>
+                Rời tab: {tabSwitchCount}/2
               </span>
-              <span>•</span>
-              <span>{questions.length} câu hỏi</span>
+            )}
+          </div>
 
-              {/* HIỂN THỊ NGÀY LÀM BÀI & NGÀY KẾT THÚC TRÊN HEADER ĐỀ THI */}
-              <span className="hidden sm:inline">•</span>
-              <span className="inline-flex items-center gap-1 text-teal-900 font-medium bg-teal-50 px-2 py-0.5 rounded border border-teal-200">
-                <Calendar className="w-3 h-3 text-teal-600" />
-                <span>Ngày làm bài: <strong className="font-mono text-teal-950">{sessionStartDate}</strong></span>
-              </span>
-              <span className="inline-flex items-center gap-1 text-rose-900 font-medium bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
-                <Clock className="w-3 h-3 text-rose-600" />
-                <span>Ngày kết thúc: <strong className="font-mono text-rose-950">{sessionEndDate}</strong></span>
-              </span>
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-gray-500">
+            <span className="font-medium text-teal-800">
+              Thí sinh: <span className="font-bold text-gray-800">{candidateName}</span>
+            </span>
+            <span>•</span>
+            <span>{questions.length} câu hỏi</span>
+            <span>•</span>
+            <span className="inline-flex items-center gap-1 text-teal-900 font-medium bg-teal-50 px-1.5 py-0.5 rounded border border-teal-200">
+              <Calendar className="w-3 h-3 text-teal-600 shrink-0" />
+              <span>Bắt đầu: <strong className="font-mono text-teal-950">{sessionStartDate}</strong></span>
+            </span>
+            <span className="inline-flex items-center gap-1 text-rose-900 font-medium bg-rose-50 px-1.5 py-0.5 rounded border border-rose-200">
+              <Clock className="w-3 h-3 text-rose-600 shrink-0" />
+              <span>Hạn nộp: <strong className="font-mono text-rose-950">{sessionEndDate}</strong></span>
+            </span>
+          </div>
 
-              {!submitted && (
-                <>
-                  <span>•</span>
-                  <span className={`font-semibold ${tabSwitchCount > 0 ? 'text-rose-600 font-bold' : 'text-gray-500'}`}>
-                    Rời tab: {tabSwitchCount}/2
-                  </span>
-                </>
+          {!submitted && (
+            <div className="pt-1 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-600 font-medium">
+              <span className="flex items-center gap-1.5 text-rose-700">
+                <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                <span>Chống gian lận: Tuyệt đối không chuyển tab, không chụp màn hình, không copy.</span>
+              </span>
+              <span className="hidden sm:inline font-bold text-amber-700">
+                Vi phạm chuyển tab lần 2 sẽ tự động nộp bài!
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ========================================================= */}
+      {/* THANH GHIM SIÊU GỌN KHI CUỘN: CHỌN CÂU HỎI, ĐỒNG HỒ & NỘP BÀI */}
+      {/* ========================================================= */}
+      <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-gray-200 shadow-xs px-3 sm:px-6 md:px-8 py-2">
+        <div className="max-w-5xl mx-auto space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            {/* Nút mở/đóng bảng Chọn câu hỏi & tiến độ làm bài */}
+            <div className="flex items-center gap-2 min-w-0">
+              <button
+                type="button"
+                onClick={() => setShowQuestionPalette((prev) => !prev)}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-900 border border-teal-200 text-xs font-bold transition-all cursor-pointer shrink-0 shadow-2xs"
+                title="Bấm để mở bảng chọn câu hỏi nhanh"
+              >
+                <LayoutGrid className="w-3.5 h-3.5 text-teal-700" />
+                <span>Chọn câu</span>
+                <span className="px-1.5 py-0.2 rounded-md bg-teal-700 text-white text-[10px] font-mono">
+                  {answeredCount}/{questions.length}
+                </span>
+                {showQuestionPalette ? (
+                  <ChevronUp className="w-3.5 h-3.5 text-teal-700" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5 text-teal-700" />
+                )}
+              </button>
+
+              <span className="hidden md:inline text-xs font-bold text-gray-700 truncate max-w-xs">
+                {session?.examTitle || examData?.title}
+              </span>
+            </div>
+
+            {/* ĐỒNG HỒ ĐẾM NGƯỢC & NÚT NỘP BÀI */}
+            <div className="flex items-center gap-2 shrink-0">
+              {!submitted ? (
+                <div
+                  className={`flex items-center gap-1.5 px-2.5 sm:px-3.5 py-1.5 rounded-xl border font-mono font-bold text-xs sm:text-sm shadow-2xs transition-all ${
+                    isLowTime
+                      ? 'bg-rose-50 text-rose-700 border-rose-300 animate-pulse ring-2 ring-rose-200'
+                      : 'bg-teal-50 text-teal-900 border-teal-200'
+                  }`}
+                  title="Thời gian làm bài còn lại"
+                >
+                  <Clock className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${isLowTime ? 'text-rose-600' : 'text-teal-700'}`} />
+                  <span>{formatTime(timeLeft)}</span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-800 rounded-xl border border-emerald-200 text-xs font-bold">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>Đã nộp bài</span>
+                </div>
+              )}
+
+              {!submitted ? (
+                <button
+                  type="button"
+                  onClick={handleSubmitExam}
+                  disabled={isSubmittingExam}
+                  className="px-3.5 sm:px-4 py-1.5 bg-[#10b981] hover:bg-[#059669] text-white font-bold rounded-xl text-xs shadow-sm cursor-pointer transition-all active:scale-95 disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {isSubmittingExam ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Đang nộp...</span>
+                    </>
+                  ) : (
+                    <span>Nộp bài</span>
+                  )}
+                </button>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/student-dashboard?studentId=${encodeURIComponent(selectedStudent || paramStudentId || candidateName)}`)}
+                    className="flex items-center gap-1 px-2.5 sm:px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs cursor-pointer shadow-sm transition-all"
+                  >
+                    <Award className="w-3.5 h-3.5" />
+                    <span>Bảng điểm</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetExam}
+                    className="flex items-center gap-1 px-2.5 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl text-xs cursor-pointer transition-all"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">Làm lại</span>
+                  </button>
+                </div>
               )}
             </div>
           </div>
 
-          {/* ĐỒNG HỒ ĐẾM NGƯỢC THỜI GIAN THỰC */}
-          <div className="flex items-center gap-3 shrink-0">
-            {!submitted ? (
-              <div
-                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border font-mono font-bold text-xs md:text-sm shadow-2xs transition-all ${
-                  isLowTime
-                    ? 'bg-rose-50 text-rose-700 border-rose-300 animate-pulse ring-2 ring-rose-200'
-                    : 'bg-teal-50 text-teal-900 border-teal-200'
-                }`}
-                title="Thời gian làm bài còn lại"
-              >
-                <Clock className={`w-4 h-4 ${isLowTime ? 'text-rose-600' : 'text-teal-700'}`} />
-                <span>{formatTime(timeLeft)}</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 px-3.5 py-1.5 bg-emerald-50 text-emerald-800 rounded-xl border border-emerald-200 text-xs font-bold">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                <span>Đã nộp bài</span>
-              </div>
-            )}
-
-            {!submitted ? (
-              <button
-                type="button"
-                onClick={handleSubmitExam}
-                disabled={isSubmittingExam}
-                className="px-4 py-2 bg-[#10b981] hover:bg-[#059669] text-white font-bold rounded-xl text-xs shadow-sm cursor-pointer transition-all active:scale-95 disabled:opacity-50 flex items-center gap-1.5"
-              >
-                {isSubmittingExam ? (
-                  <>
-                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Đang nộp...</span>
-                  </>
-                ) : (
-                  <span>Nộp bài</span>
-                )}
-              </button>
-            ) : (
-              <div className="flex items-center gap-2">
+          {/* Dải cuộn ngang chọn nhanh câu hỏi (Tối ưu cho điện thoại & máy tính bảng) */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-0.5 no-scrollbar">
+            {part1Questions.map((_, idx) => {
+              const done = Boolean(answers[`Phần I-${idx}`]);
+              return (
                 <button
+                  key={`strip-p1-${idx}`}
                   type="button"
-                  onClick={() => navigate(`/student-dashboard?studentId=${encodeURIComponent(selectedStudent || paramStudentId || candidateName)}`)}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs cursor-pointer shadow-sm transition-all"
+                  onClick={() => scrollToQuestion(`exam-q-p1-${idx}`)}
+                  className={`h-7 min-w-[32px] px-2 rounded-lg text-[11px] font-bold border transition-all shrink-0 cursor-pointer ${
+                    done
+                      ? 'bg-teal-600 text-white border-teal-700 shadow-2xs'
+                      : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-teal-400'
+                  }`}
+                  title={`Phần I - Câu ${idx + 1}`}
                 >
-                  <Award className="w-3.5 h-3.5" />
-                  <span>Về Bảng điểm</span>
+                  {idx + 1}
                 </button>
+              );
+            })}
+            {part2Questions.map((_, idx) => {
+              const obj = answers[`Phần II-${idx}`] || {};
+              const count = Object.keys(obj).filter((k) => obj[k] === 'Đúng' || obj[k] === 'Sai').length;
+              const done = count === 4;
+              const partial = count > 0 && count < 4;
+              return (
                 <button
+                  key={`strip-p2-${idx}`}
                   type="button"
-                  onClick={resetExam}
-                  className="flex items-center gap-1.5 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl text-xs cursor-pointer transition-all"
+                  onClick={() => scrollToQuestion(`exam-q-p2-${idx}`)}
+                  className={`h-7 min-w-[38px] px-2 rounded-lg text-[11px] font-bold border transition-all shrink-0 cursor-pointer ${
+                    done
+                      ? 'bg-teal-600 text-white border-teal-700 shadow-2xs'
+                      : partial
+                      ? 'bg-amber-50 text-amber-800 border-amber-300'
+                      : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-teal-400'
+                  }`}
+                  title={`Phần II (Đúng/Sai) - Câu ${idx + 1}`}
                 >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Làm lại</span>
+                  II.{idx + 1}
                 </button>
-              </div>
-            )}
+              );
+            })}
+            {part3Questions.map((_, idx) => {
+              const done = Boolean((answers[`Phần III-${idx}`] || '').trim());
+              return (
+                <button
+                  key={`strip-p3-${idx}`}
+                  type="button"
+                  onClick={() => scrollToQuestion(`exam-q-p3-${idx}`)}
+                  className={`h-7 min-w-[38px] px-2 rounded-lg text-[11px] font-bold border transition-all shrink-0 cursor-pointer ${
+                    done
+                      ? 'bg-teal-600 text-white border-teal-700 shadow-2xs'
+                      : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-teal-400'
+                  }`}
+                  title={`Phần III (Trả lời ngắn) - Câu ${idx + 1}`}
+                >
+                  III.{idx + 1}
+                </button>
+              );
+            })}
           </div>
+
+          {/* Bảng lưới chọn câu hỏi đầy đủ khi bấm nút "Chọn câu" */}
+          {showQuestionPalette && (
+            <div className="pt-2 pb-1 border-t border-gray-100 space-y-2.5 max-h-[60vh] overflow-y-auto">
+              <div className="flex items-center justify-between text-[11px] text-gray-500">
+                <div className="flex items-center gap-3">
+                  <span className="inline-flex items-center gap-1">
+                    <span className="w-2.5 h-2.5 rounded-xs bg-teal-600 inline-block" /> Đã trả lời
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="w-2.5 h-2.5 rounded-xs bg-amber-100 border border-amber-400 inline-block" /> Đang làm dở
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <span className="w-2.5 h-2.5 rounded-xs bg-gray-100 border border-gray-300 inline-block" /> Chưa làm
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowQuestionPalette(false)}
+                  className="text-xs font-bold text-teal-700 hover:underline cursor-pointer"
+                >
+                  Thu gọn
+                </button>
+              </div>
+
+              {part1Questions.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[11px] font-bold text-teal-900">
+                    Phần I. Trắc nghiệm 4 lựa chọn ({part1Questions.length} câu)
+                  </div>
+                  <div className="grid grid-cols-6 sm:grid-cols-10 md:grid-cols-12 gap-1.5">
+                    {part1Questions.map((_, idx) => {
+                      const userChoice = answers[`Phần I-${idx}`];
+                      const done = Boolean(userChoice);
+                      return (
+                        <button
+                          key={`grid-p1-${idx}`}
+                          type="button"
+                          onClick={() => scrollToQuestion(`exam-q-p1-${idx}`)}
+                          className={`py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer flex flex-col items-center justify-center ${
+                            done
+                              ? 'bg-teal-600 text-white border-teal-700'
+                              : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-teal-400'
+                          }`}
+                        >
+                          <span>{idx + 1}</span>
+                          {userChoice && <span className="text-[9px] opacity-90">{userChoice}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {part2Questions.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[11px] font-bold text-teal-900">
+                    Phần II. Trắc nghiệm Đúng / Sai ({part2Questions.length} câu)
+                  </div>
+                  <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+                    {part2Questions.map((_, idx) => {
+                      const obj = answers[`Phần II-${idx}`] || {};
+                      const count = Object.keys(obj).filter((k) => obj[k] === 'Đúng' || obj[k] === 'Sai').length;
+                      const done = count === 4;
+                      const partial = count > 0 && count < 4;
+                      return (
+                        <button
+                          key={`grid-p2-${idx}`}
+                          type="button"
+                          onClick={() => scrollToQuestion(`exam-q-p2-${idx}`)}
+                          className={`py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer flex flex-col items-center justify-center ${
+                            done
+                              ? 'bg-teal-600 text-white border-teal-700'
+                              : partial
+                              ? 'bg-amber-50 text-amber-800 border-amber-300'
+                              : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-teal-400'
+                          }`}
+                        >
+                          <span>Câu {idx + 1}</span>
+                          <span className="text-[9px] opacity-85">{count}/4 ý</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {part3Questions.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[11px] font-bold text-teal-900">
+                    Phần III. Trả lời ngắn ({part3Questions.length} câu)
+                  </div>
+                  <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+                    {part3Questions.map((_, idx) => {
+                      const val = (answers[`Phần III-${idx}`] || '').trim();
+                      const done = Boolean(val);
+                      return (
+                        <button
+                          key={`grid-p3-${idx}`}
+                          type="button"
+                          onClick={() => scrollToQuestion(`exam-q-p3-${idx}`)}
+                          className={`py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer flex flex-col items-center justify-center ${
+                            done
+                              ? 'bg-teal-600 text-white border-teal-700'
+                              : 'bg-gray-50 text-gray-700 border-gray-200 hover:border-teal-400'
+                          }`}
+                        >
+                          <span>Câu {idx + 1}</span>
+                          <span className="text-[9px] opacity-85 truncate max-w-[90%]">{done ? val : 'Chưa điền'}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
-
-        {/* Dải cảnh báo quy chế thi ghim sát dưới header khi đang thi */}
-        {!submitted && (
-          <div className="max-w-5xl mx-auto mt-2 pt-2 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-600 font-medium">
-            <span className="flex items-center gap-1.5 text-rose-700">
-              <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-              <span>Chống gian lận: Tuyệt đối không chuyển tab, không chụp màn hình, không copy.</span>
-            </span>
-            <span className="hidden sm:inline font-bold text-amber-700">
-              Vi phạm chuyển tab lần 2 sẽ tự động nộp bài!
-            </span>
-          </div>
-        )}
       </header>
 
       {/* ========================================================= */}
@@ -1509,7 +1727,8 @@ export default function ExamTest() {
                 return (
                   <div
                     key={idx}
-                    className={`bg-white p-5 rounded-2xl border shadow-2xs space-y-3 transition-all ${
+                    id={`exam-q-p1-${idx}`}
+                    className={`scroll-mt-28 bg-white p-5 rounded-2xl border shadow-2xs space-y-3 transition-all ${
                       submitted
                         ? isCorrect
                           ? 'border-emerald-300 bg-emerald-50/20'
@@ -1661,7 +1880,7 @@ export default function ExamTest() {
                 else if (matchCount === 4) earnedScore = pts.p2.opt4;
 
                 return (
-                  <div key={idx} className="bg-white p-5 rounded-2xl border border-gray-200 shadow-2xs space-y-4">
+                  <div key={idx} id={`exam-q-p2-${idx}`} className="scroll-mt-28 bg-white p-5 rounded-2xl border border-gray-200 shadow-2xs space-y-4">
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-2">
                         <span className="px-2.5 py-0.5 rounded-full bg-teal-50 text-teal-800 text-[11px] font-bold border border-teal-200">
@@ -1808,7 +2027,8 @@ export default function ExamTest() {
                 return (
                   <div
                     key={idx}
-                    className={`bg-white p-5 rounded-2xl border shadow-2xs space-y-3 transition-all ${
+                    id={`exam-q-p3-${idx}`}
+                    className={`scroll-mt-28 bg-white p-5 rounded-2xl border shadow-2xs space-y-3 transition-all ${
                       submitted
                         ? isMatch
                           ? 'border-emerald-300 bg-emerald-50/20'
