@@ -564,10 +564,75 @@ export default function StudentDashboard() {
 
         {/* Nội dung theo từng mục menu */}
         <div className="p-4 md:p-8 space-y-6 max-w-6xl w-full mx-auto">
-          {/* BANNER TỔNG QUAN HỌC TẬP (Chuẩn giao diện Giáo viên & đồng bộ Banner) */}
-          <div className={`bg-gradient-to-r ${bannerConfig.themeGradient || 'from-teal-700 via-teal-600 to-indigo-700'} rounded-3xl p-6 md:p-8 text-white shadow-md relative overflow-hidden`}>
-            <div className="relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
-              <div className={`${bannerConfig.showOnStudentDashboard && bannerConfig.imageUrl ? 'lg:col-span-6' : 'lg:col-span-12'} space-y-2.5`}>
+          {/* BANNER TỔNG QUAN HỌC TẬP (Giãn rộng 100% toàn khung giống Cổng Giáo viên) */}
+          {bannerConfig.showOnStudentDashboard && bannerConfig.imageUrl ? (
+            <div
+              style={{ height: `${Math.max(190, Math.min(420, bannerConfig.bannerHeight || 260))}px` }}
+              className={`group relative w-full rounded-3xl overflow-hidden shadow-md bg-gradient-to-r ${
+                bannerConfig.themeGradient || 'from-teal-700 via-teal-600 to-indigo-700'
+              } border-2 border-teal-600/20 transition-all`}
+            >
+              <img
+                src={bannerConfig.imageUrl}
+                alt="Student Overview Banner"
+                style={{
+                  objectFit: bannerConfig.objectFit || 'fill',
+                  objectPosition: `center ${bannerConfig.objectPositionY ?? 50}%`
+                }}
+                className="w-full h-full block select-none"
+              />
+
+              {bannerConfig.bannerCaption && (
+                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/80 via-slate-950/40 to-transparent px-4 py-2 pointer-events-none">
+                  <span className="text-[11px] font-semibold text-white/95 truncate block">
+                    {bannerConfig.bannerCaption}
+                  </span>
+                </div>
+              )}
+
+              {/* Lời chào nhỏ gọn góc trên bên trái (Hiện nhẹ khi di chuột giống cổng Giáo viên) */}
+              <div className="absolute top-3 left-4 z-20 flex flex-wrap items-center gap-2 opacity-95 md:opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-900/75 text-white backdrop-blur-md border border-white/25 shadow-md">
+                  <Sparkles className="w-3.5 h-3.5 text-teal-300" />
+                  <span>Xin chào, {cleanStudentName || studentName}!</span>
+                </span>
+              </div>
+
+              {/* Các nút điều hướng nhanh gọn ở góc trái dưới (Hiện nhẹ khi di chuột để không che ảnh Banner) */}
+              <div className="absolute bottom-3 left-4 z-20 flex flex-wrap items-center gap-2 opacity-95 md:opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('assignments')}
+                  className="px-3 py-1.5 bg-white/95 hover:bg-white text-teal-900 font-bold rounded-xl text-xs shadow-md flex items-center gap-1.5 cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5 text-teal-600" />
+                  <span>Xem bài thi được giao ({assignments.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('scores')}
+                  className="px-3 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white font-bold rounded-xl text-xs border border-white/25 backdrop-blur-md shadow-md flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Award className="w-3.5 h-3.5 text-amber-300" />
+                  <span>Xem bảng điểm cá nhân ({totalCompleted})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('notifications')}
+                  className="px-3 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white font-bold rounded-xl text-xs border border-white/25 backdrop-blur-md shadow-md flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Bell className="w-3.5 h-3.5 text-teal-300" />
+                  <span>Thông báo mới ({notifications.length})</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div
+              className={`bg-gradient-to-r ${
+                bannerConfig.themeGradient || 'from-teal-700 via-teal-600 to-indigo-700'
+              } rounded-3xl p-6 md:p-8 text-white shadow-md relative overflow-hidden`}
+            >
+              <div className="relative z-10 space-y-2.5">
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-white/20 backdrop-blur-xs text-white">
                   <Sparkles className="w-3.5 h-3.5" />
                   <span>Tổng quan Cổng Học Sinh</span>
@@ -603,34 +668,8 @@ export default function StudentDashboard() {
                   </button>
                 </div>
               </div>
-
-              {bannerConfig.showOnStudentDashboard && bannerConfig.imageUrl && (
-                <div className="lg:col-span-6">
-                  <div
-                    style={{ height: `${Math.max(170, Math.min(300, bannerConfig.bannerHeight || 210))}px` }}
-                    className="relative w-full rounded-2xl overflow-hidden border-2 border-white/25 bg-slate-900/30 shadow-lg"
-                  >
-                    <img
-                      src={bannerConfig.imageUrl}
-                      alt="School Banner"
-                      style={{
-                        objectFit: bannerConfig.objectFit || 'fill',
-                        objectPosition: `center ${bannerConfig.objectPositionY ?? 50}%`
-                      }}
-                      className="w-full h-full block select-none"
-                    />
-                    {bannerConfig.bannerCaption && (
-                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/80 via-slate-950/40 to-transparent px-4 py-2">
-                        <span className="text-[11px] font-semibold text-white/95 truncate block">
-                          {bannerConfig.bannerCaption}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
-          </div>
+          )}
 
           {/* 1. MỤC: THÔNG BÁO */}
           {(activeTab === 'notifications' || activeTab === 'overview') && (
