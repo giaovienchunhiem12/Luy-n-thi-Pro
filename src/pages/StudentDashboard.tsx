@@ -139,17 +139,52 @@ export default function StudentDashboard() {
 
   // 2. Lắng nghe danh sách bài thi được giao từ Firestore
   useEffect(() => {
+    const normalizeForNaturalSort = (raw: string): string =>
+      (raw || '')
+        .trim()
+        .normalize('NFC')
+        .toLowerCase()
+        .replace(/\b(đề(?:\s+thi|\s+kiểm\s+tra)?)\s+số\s+(?=\d)/g, '$1 ')
+        .replace(/\b(bài|chương|chuyên\s*đề|cđ|phần|câu)\s+số\s+(?=\d)/g, '$1 ')
+        .replace(/([^\d\s_.-])(\d)/g, '$1 $2')
+        .replace(/(\d)([^\d\s_.-])/g, '$1 $2')
+        .replace(/[\s_-]+/g, ' ')
+        .trim();
+
+    const naturalCompareAsc = (aRaw?: string, bRaw?: string): number => {
+      const a = normalizeForNaturalSort(aRaw || '');
+      const b = normalizeForNaturalSort(bRaw || '');
+      const reg = /(\d+)|(\D+)/g;
+      const aParts = a.match(reg) || [];
+      const bParts = b.match(reg) || [];
+      const len = Math.min(aParts.length, bParts.length);
+
+      for (let i = 0; i < len; i++) {
+        const pA = aParts[i];
+        const pB = bParts[i];
+        if (/^\d+$/.test(pA) && /^\d+$/.test(pB)) {
+          const diff = parseInt(pA, 10) - parseInt(pB, 10);
+          if (diff !== 0) return diff;
+        } else {
+          const cmp = pA.localeCompare(pB, 'vi', { sensitivity: 'base' });
+          if (cmp !== 0) return cmp;
+        }
+      }
+      return aParts.length - bParts.length;
+    };
+
     const unsubSessions = onSnapshot(collection(db, 'examSessions'), (snap) => {
       if (!snap.empty) {
-        const list = snap.docs.map(docSnap => ({
+        const list: any[] = snap.docs.map(docSnap => ({
           id: docSnap.id,
           ...docSnap.data()
         }));
+        list.sort((a, b) => naturalCompareAsc(a.examTitle || a.name, b.examTitle || b.name));
         setAssignments(list);
       } else {
         setAssignments([
-          { id: 'GD12_Bai2_12A1', name: 'GD12_Bài 2.docx_12A1', examTitle: 'GD12_Bài 2.docx', className: '12A1', durationMinutes: 45, status: 'Đang diễn ra' },
           { id: 'Ls12_B1_12A1', name: 'Ls12_B1.docx_12A1', examTitle: 'Ls12_B1.docx', className: '12A1', durationMinutes: 45, status: 'Đang diễn ra' },
+          { id: 'GD12_Bai2_12A1', name: 'GD12_Bài 2.docx_12A1', examTitle: 'GD12_Bài 2.docx', className: '12A1', durationMinutes: 45, status: 'Đang diễn ra' },
         ]);
       }
       setLoadingAssignments(false);

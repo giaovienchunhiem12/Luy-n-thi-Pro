@@ -118,6 +118,40 @@ export default function OnlineAssignment() {
     }
   }, [notification]);
 
+  const normalizeForNaturalSort = (raw: string): string =>
+    (raw || '')
+      .trim()
+      .normalize('NFC')
+      .toLowerCase()
+      .replace(/\b(đề(?:\s+thi|\s+kiểm\s+tra)?)\s+số\s+(?=\d)/g, '$1 ')
+      .replace(/\b(bài|chương|chuyên\s*đề|cđ|phần|câu)\s+số\s+(?=\d)/g, '$1 ')
+      .replace(/([^\d\s_.-])(\d)/g, '$1 $2')
+      .replace(/(\d)([^\d\s_.-])/g, '$1 $2')
+      .replace(/[\s_-]+/g, ' ')
+      .trim();
+
+  const naturalCompareAsc = (aRaw?: string, bRaw?: string): number => {
+    const a = normalizeForNaturalSort(aRaw || '');
+    const b = normalizeForNaturalSort(bRaw || '');
+    const reg = /(\d+)|(\D+)/g;
+    const aParts = a.match(reg) || [];
+    const bParts = b.match(reg) || [];
+    const len = Math.min(aParts.length, bParts.length);
+
+    for (let i = 0; i < len; i++) {
+      const pA = aParts[i];
+      const pB = bParts[i];
+      if (/^\d+$/.test(pA) && /^\d+$/.test(pB)) {
+        const diff = parseInt(pA, 10) - parseInt(pB, 10);
+        if (diff !== 0) return diff;
+      } else {
+        const cmp = pA.localeCompare(pB, 'vi', { sensitivity: 'base' });
+        if (cmp !== 0) return cmp;
+      }
+    }
+    return aParts.length - bParts.length;
+  };
+
   // Lấy danh sách lớp và đề thi của giáo viên để phục vụ tạo phiên
   useEffect(() => {
     const user = auth.currentUser || authUser;
@@ -125,24 +159,26 @@ export default function OnlineAssignment() {
 
     const qClasses = query(collection(db, 'classes'));
     const unsubClasses = onSnapshot(qClasses, (snap) => {
-      setClassesList(snap.docs.map((d) => ({ id: d.id, name: d.data().name })));
+      const cls = snap.docs.map((d) => ({ id: d.id, name: d.data().name }));
+      cls.sort((a, b) => naturalCompareAsc(a.name, b.name));
+      setClassesList(cls);
     });
 
     const qExams = query(collection(db, 'exams'));
     const unsubExams = onSnapshot(qExams, (snap) => {
-      setExamsList(
-        snap.docs.map((d) => {
-          const data = d.data();
-          return {
-            id: d.id,
-            title: data.title,
-            durationMinutes: data.durationMinutes,
-            questionCountStr: data.questionCountStr,
-            sectionPoints: data.sectionPoints,
-            questions: data.questions
-          };
-        })
-      );
+      const exList = snap.docs.map((d) => {
+        const data = d.data();
+        return {
+          id: d.id,
+          title: data.title,
+          durationMinutes: data.durationMinutes,
+          questionCountStr: data.questionCountStr,
+          sectionPoints: data.sectionPoints,
+          questions: data.questions
+        };
+      });
+      exList.sort((a, b) => naturalCompareAsc(a.title, b.title));
+      setExamsList(exList);
     });
 
     return () => {
@@ -169,6 +205,7 @@ export default function OnlineAssignment() {
             id: d.id,
             ...d.data()
           } as ExamSession));
+          list.sort((a, b) => naturalCompareAsc(a.examTitle || a.name, b.examTitle || b.name));
           setSessions(list);
           setLoading(false);
       },

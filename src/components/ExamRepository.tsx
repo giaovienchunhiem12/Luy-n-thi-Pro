@@ -189,12 +189,48 @@ export default function ExamRepository() {
     return () => window.removeEventListener('click', handleClickOutside);
   }, []);
 
+  const normalizeForNaturalSort = (raw: string): string =>
+    (raw || '')
+      .trim()
+      .normalize('NFC')
+      .toLowerCase()
+      .replace(/\b(đề(?:\s+thi|\s+kiểm\s+tra)?)\s+số\s+(?=\d)/g, '$1 ')
+      .replace(/\b(bài|chương|chuyên\s*đề|cđ|phần|câu)\s+số\s+(?=\d)/g, '$1 ')
+      .replace(/([^\d\s_.-])(\d)/g, '$1 $2')
+      .replace(/(\d)([^\d\s_.-])/g, '$1 $2')
+      .replace(/[\s_-]+/g, ' ')
+      .trim();
+
+  const naturalCompareAsc = (aRaw?: string, bRaw?: string): number => {
+    const a = normalizeForNaturalSort(aRaw || '');
+    const b = normalizeForNaturalSort(bRaw || '');
+    const reg = /(\d+)|(\D+)/g;
+    const aParts = a.match(reg) || [];
+    const bParts = b.match(reg) || [];
+    const len = Math.min(aParts.length, bParts.length);
+
+    for (let i = 0; i < len; i++) {
+      const pA = aParts[i];
+      const pB = bParts[i];
+      if (/^\d+$/.test(pA) && /^\d+$/.test(pB)) {
+        const diff = parseInt(pA, 10) - parseInt(pB, 10);
+        if (diff !== 0) return diff;
+      } else {
+        const cmp = pA.localeCompare(pB, 'vi', { sensitivity: 'base' });
+        if (cmp !== 0) return cmp;
+      }
+    }
+    return aParts.length - bParts.length;
+  };
+
   useEffect(() => {
     const user = auth.currentUser || authUser;
     if (!user) return;
     const q = query(collection(db, 'classes'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setClassesList(snapshot.docs.map((d) => ({ id: d.id, name: d.data().name })));
+      const cls = snapshot.docs.map((d) => ({ id: d.id, name: d.data().name }));
+      cls.sort((a, b) => naturalCompareAsc(a.name, b.name));
+      setClassesList(cls);
     });
     return () => unsubscribe();
   }, [authUser]);
@@ -210,7 +246,9 @@ export default function ExamRepository() {
     const qFolders = query(collection(db, 'folders'));
 
     const unsubFolders = onSnapshot(qFolders, (snap) => {
-      setFolders(snap.docs.map((d) => ({ id: d.id, ...d.data() } as FolderItem)));
+      const folderList = snap.docs.map((d) => ({ id: d.id, ...d.data() } as FolderItem));
+      folderList.sort((a, b) => naturalCompareAsc(a.name, b.name));
+      setFolders(folderList);
     });
 
     const unsubExams = onSnapshot(qExams, async (snap) => {
@@ -221,6 +259,7 @@ export default function ExamRepository() {
           id: d.id,
           ...d.data()
         } as ExamItem));
+        list.sort((a, b) => naturalCompareAsc(a.title, b.title));
         setExams(list);
         setLoading(false);
       }
@@ -2079,7 +2118,7 @@ export default function ExamRepository() {
           id: `local_${Date.now()}`,
           ...(basePayload as any)
         };
-        setExams(prev => [localExam, ...prev]);
+        setExams(prev => [...prev, localExam].sort((a, b) => naturalCompareAsc(a.title, b.title)));
       }
 
       setShowSettingModal(false);
@@ -2188,13 +2227,17 @@ export default function ExamRepository() {
     }
   };
 
-  const filteredExams = exams.filter((item) => {
-    const matchesSearch = item.title.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesFolder = selectedFolderId === 'all' || item.folderId === selectedFolderId;
-    return matchesSearch && matchesFolder;
-  });
+  const filteredExams = exams
+    .filter((item) => {
+      const matchesSearch = item.title.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesFolder = selectedFolderId === 'all' || item.folderId === selectedFolderId;
+      return matchesSearch && matchesFolder;
+    })
+    .sort((a, b) => naturalCompareAsc(a.title, b.title));
 
-  const recommendedExams = exams.filter((item) => item.isRecommended);
+  const recommendedExams = exams
+    .filter((item) => item.isRecommended)
+    .sort((a, b) => naturalCompareAsc(a.title, b.title));
 
   return (
     <div className="flex-1 bg-white min-h-screen p-6 md:p-8 relative">
