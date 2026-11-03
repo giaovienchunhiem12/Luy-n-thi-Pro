@@ -44,7 +44,13 @@ import {
 } from 'lucide-react';
 import { MathText } from './MathText';
 import { MathPreview } from './MathPreview';
-import { MathEquationModal, repairDetachedFractionsInQuestion } from './MathEquationModal';
+import {
+  MathEquationModal,
+  repairDetachedFractionsInQuestion,
+  maskImgTagsForTextarea,
+  unmaskImgTagsFromTextarea,
+  extractImgSourcesFromHtml,
+} from './MathEquationModal';
 import { sanitizeMathContent, convertOmmlToLatex, decodePdfMathSymbols } from '../utils/mathSanitizer';
 import { parseWordFile, parsePdfFileToText } from '../utils/wordParser';
 import { compressExamQuestions, estimateObjectSizeBytes, sanitizeForFirestore } from '../utils/imageCompressor';
@@ -284,21 +290,134 @@ export default function ExamRepository() {
     // 1. Chuẩn hóa MathType, MathML, OMML và ký hiệu toán học trước
     let processed = sanitizeMathContent(html);
 
-    // 2. Bảo toàn gạch chân đáp án và định dạng đoạn văn
+    // 2. Bảo toàn gạch chân đáp án
     processed = processed
       .replace(/<span[^>]*style=["'][^"']*text-decoration:\s*underline[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi, '<u>$1</u>')
       .replace(/<ins[^>]*>([\s\S]*?)<\/ins>/gi, '<u>$1</u>')
       .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+
+    // 3. Phân biệt Bảng dữ liệu (Data Table trong câu hỏi, đáp án, lời giải) với Bảng dàn trang (Layout Table)
+    // Giữ nguyên các bảng dữ liệu dưới dạng chuỗi HTML 1 dòng <table class="exam-data-table">...</table>
+    const preservedDataTables: string[] = [];
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(processed, 'text/html');
+      const tables = Array.from(doc.querySelectorAll('table')).reverse();
+
+      const serializeCellContent = (cell: Element): string => {
+        const clone = cell.cloneNode(true) as Element;
+        clone.querySelectorAll('p, div, li').forEach((el, idx) => {
+          if (idx > 0) {
+            el.insertAdjacentHTML('beforebegin', '<br/>');
+          }
+        });
+        let inner = clone.innerHTML
+          .replace(/\r?\n/g, ' ')
+          .replace(/<(?!(\/?(?:u|b|strong|i|em|sub|sup|br|img)\b))[^>]+>/gi, ' ')
+          .replace(/(?:<br\s*\/?>\s*){2,}/gi, '<br/>')
+          .replace(/^(?:<br\s*\/?>|\s)+|(?:<br\s*\/?>|\s)+$/gi, '')
+          .replace(/\s{2,}/g, ' ')
+          .trim();
+        return sanitizeMathContent(inner);
+      };
+
+      for (const tbl of tables) {
+        // Nếu bảng chứa bảng con bên trong thì bảng ngoài là bảng dàn trang
+        if (tbl.querySelector('table')) continue;
+
+        const tblText = (tbl.textContent || '').replace(/\s+/g, ' ').trim();
+        const rows = Array.from(tbl.querySelectorAll('tr'));
+        const cells = Array.from(tbl.querySelectorAll('th, td'));
+        if (rows.length === 0 || cells.length < 2) continue;
+
+        // Kiểm tra xem có phải bảng dàn trang (chứa câu hỏi, lời giải, bảng đáp án, tiêu đề sở/trường, hoặc dàn phương án A. B. C. D. / ảnh minh họa ngang hàng) không
+        const questionHeaderMatches = tblText.match(/(?:^|\s)(?:Câu|Bài|CAU|BÀI)\s+\d+\b/gi) || [];
+        const hasAdminOrSectionHeader = /(?:SỞ\s+GIÁO\s+DỤC|SỞ\s+GD|TRƯỜNG\s+THPT|ĐỀ\s+CHÍNH\s+THỨC|PHẦN\s+(?:I|II|III|1|2|3)\b|BẢNG\s*ĐÁP\s*ÁN|HƯỚNG\s*DẪN\s*GIẢI|LỜI\s*GIẢI\s*CHI\s*TIẾT)/i.test(tblText);
+        const hasSolutionContent = /(?:^|\s)(?:Lời\s*giải|Hướng\s*dẫn(?:\s*giải)?|Bài\s*giải|Giải\s*chi\s*tiết|HDG|Chọn\s+[A-D]\b)/i.test(tblText);
+        const optionStartingCells = cells.filter(c => {
+          const ct = (c.textContent || '').trim();
+          return /^(?:[A-D][\.\:\)]|[a-d]\))\s*\S/.test(ct);
+        });
+        const answerKeyCells = cells.filter(c => {
+          const ct = (c.textContent || '').trim();
+          return /^(?:Câu\s*)?\d{1,2}\s*[\.\:\-\)]?\s*[A-D]$/i.test(ct);
+        });
+        const isOptionGridLayout = optionStartingCells.length >= 2;
+        const isAnswerKeyTable = answerKeyCells.length >= 2;
+        const hasEmbeddedImg = tbl.querySelector('img') !== null;
+        const hasLongProseCell = cells.some(c => ((c.textContent || '').replace(/\s+/g, ' ').trim().length > 45));
+        const isSideBySideTextAndImageLayout =
+          (rows.length === 1 && cells.length === 2) ||
+          (hasEmbeddedImg && hasLongProseCell);
+
+        if (
+          questionHeaderMatches.length >= 1 ||
+          hasAdminOrSectionHeader ||
+          hasSolutionContent ||
+          isOptionGridLayout ||
+          isAnswerKeyTable ||
+          isSideBySideTextAndImageLayout
+        ) {
+          continue;
+        }
+
+        // Đây là Bảng dữ liệu thực sự (trong câu hỏi, ý đáp án hoặc lời giải)
+        const trHtmlList: string[] = [];
+        for (const tr of rows) {
+          const rowCells = Array.from(tr.children).filter(
+            el => el.tagName.toLowerCase() === 'td' || el.tagName.toLowerCase() === 'th'
+          );
+          if (rowCells.length === 0) continue;
+          const cellHtmls = rowCells.map(c => {
+            const tag = c.tagName.toLowerCase() === 'th' ? 'th' : 'td';
+            const colspan = c.getAttribute('colspan');
+            const rowspan = c.getAttribute('rowspan');
+            const attrs =
+              (colspan && colspan !== '1' ? ` colspan="${colspan}"` : '') +
+              (rowspan && rowspan !== '1' ? ` rowspan="${rowspan}"` : '');
+            return `<${tag}${attrs}>${serializeCellContent(c)}</${tag}>`;
+          });
+          trHtmlList.push(`<tr>${cellHtmls.join('')}</tr>`);
+        }
+
+        if (trHtmlList.length > 0) {
+          const compactTableHtml = `<table class="exam-data-table"><tbody>${trHtmlList.join('')}</tbody></table>`;
+          const token = ` __EXAM_DATA_TABLE_${preservedDataTables.length}__ `;
+          preservedDataTables.push(compactTableHtml);
+          tbl.replaceWith(doc.createTextNode(token));
+        }
+      }
+
+      processed = doc.body.innerHTML;
+    } catch (e) {
+      console.warn('Không thể phân tích DOM bảng dữ liệu:', e);
+    }
+
+    // 4. Bảo vệ toàn bộ thẻ <img ...> trước khi chuyển đổi các thẻ khối sang văn bản dòng
+    const preservedHtmlImages: string[] = [];
+    processed = processed.replace(/<img\b[^>]*>/gi, (imgTag) => {
+      const idx = preservedHtmlImages.length;
+      preservedHtmlImages.push(imgTag);
+      return ` __EXAM_HTML_IMG_${idx}__ `;
+    });
+
+    processed = processed
       .replace(/<br\s*[\/]?>/gi, '\n')
       .replace(/<\/(?:p|div|tr|h[1-6]|li)>/gi, '\n\n')
       .replace(/<(?:p|div|tr|h[1-6]|li)[^>]*>/gi, '\n')
       .replace(/<td[^>]*>/gi, ' ')
-      .replace(/<(?!(\/?u\b|\/?img\b))[^>]+>/gi, ' ')
+      .replace(/<(?!(\/?u\b))[^>]+>/gi, ' ')
       .replace(/&nbsp;/gi, ' ')
-      .replace(/&lt;/gi, '<')
-      .replace(/&gt;/gi, '>')
       .replace(/&amp;/gi, '&');
+
+    // 5. Khôi phục các thẻ <img ...> và bảng dữ liệu <table class="exam-data-table">...</table>
+    preservedHtmlImages.forEach((imgTag, idx) => {
+      processed = processed.replace(`__EXAM_HTML_IMG_${idx}__`, () => imgTag);
+    });
+    preservedDataTables.forEach((tblHtml, idx) => {
+      processed = processed.replace(`__EXAM_DATA_TABLE_${idx}__`, () => tblHtml);
+    });
 
     return sanitizeMathContent(processed);
   };
@@ -422,6 +541,24 @@ export default function ExamRepository() {
 
     try {
       let text = await extractRawTextFromFile(selectedFile);
+
+      // Bảo vệ toàn bộ chuỗi dữ liệu ảnh base64 (data:image/...) bằng token ngắn gọn an toàn tuyệt đối
+      // để KHÔNG BẤT KỲ regex tách phần, tách câu, tách đáp án hay sửa công thức nào có thể chạm vào dữ liệu ảnh!
+      const mediaDataUrls: string[] = [];
+      text = text.replace(/data:image\/[^"'\s>]+/gi, (dataUrl) => {
+        const idx = mediaDataUrls.length;
+        mediaDataUrls.push(dataUrl);
+        return `data:image/placeholder;base64,__MEDIA_DATA_${idx}__`;
+      });
+
+      const restoreMediaUrlInString = (str?: string): string => {
+        if (!str) return '';
+        return str.replace(
+          /data:image\/placeholder;base64,__MEDIA_DATA_(\d+)__/g,
+          (_, idxStr) => mediaDataUrls[Number(idxStr)] || ''
+        );
+      };
+
       text = decodePdfMathSymbols(text)
         .normalize('NFC')
         .replace(/\r\n/g, '\n')
@@ -479,18 +616,18 @@ export default function ExamRepository() {
         .join('\n');
 
       // Biểu thức regex nhận diện từ khóa Lời giải tuyệt đối chuẩn xác
-      const robustSolutionRegex = /(?<=^|[\r\n\s]|<[^>]+>)(?:\[?\s*(?:L\s*ờ\s*i\s*g\s*i\s*ả\s*i|B\s*à\s*i\s*g\s*i\s*ả\s*i|H\s*ư\s*ớ\s*n\s*g\s*d\s*ẫ\s*n\s*g\s*i\s*ả\s*i|G\s*i\s*ả\s*i\s*c\s*h\s*i\s*t\s*i\s*ế\s*t|HD\s*giải|HDG|H\s*ư\s*ớ\s*n\s*g\s*d\s*ẫ\s*n)\s*\]?[\:\.\-]?|Giải\s*[\:\.\-])\s*/i;
+      const robustSolutionRegex = /(?<=^|[\r\n\s]|<\/?[a-zA-Z][^>]*>)(?:\[?\s*(?:L\s*ờ\s*i\s*g\s*i\s*ả\s*i|B\s*à\s*i\s*g\s*i\s*ả\s*i|H\s*ư\s*ớ\s*n\s*g\s*d\s*ẫ\s*n\s*g\s*i\s*ả\s*i|G\s*i\s*ả\s*i\s*c\s*h\s*i\s*t\s*i\s*ế\s*t|HD\s*giải|HDG|H\s*ư\s*ớ\s*n\s*g\s*d\s*ẫ\s*n)\s*\]?[\:\.\-]?|Giải\s*[\:\.\-])\s*/i;
 
       // 1. Phân chia ranh giới 3 phần dựa vào các tiêu đề lớn (Phần I, Phần II, Phần III):
       // Yêu cầu tiêu đề phần nằm ở đầu dòng (hoặc sau thẻ HTML) để không bắt nhầm chữ "phần" trong câu văn
-      const p1Regex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*(?:I(?![IVX\w])|1\b|MỘT\b|THỨ\s*NHẤT)|I\s*[\.\:\)]\s*(?=CÂU\s*TRẮC\s*NGHIỆM|CÂU\s*HỎI|TRẮC\s*NGHIỆM|PHẦN))[\.\:\-\s\)]*/gi;
-      const p2Regex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*(?:II(?![IVX\w])|2\b|HAI\b|THỨ\s*HAI)|II\s*[\.\:\)]\s*(?=CÂU\s*TRẮC\s*NGHIỆM|CÂU\s*HỎI|TRẮC\s*NGHIỆM|ĐÚNG\s*SAI|PHẦN))[\.\:\-\s\)]*/gi;
-      const p3Regex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*(?:III(?![IVX\w])|3\b|BA\b|THỨ\s*BA)|III\s*[\.\:\)]\s*(?=CÂU\s*TRẮC\s*NGHIỆM|CÂU\s*HỎI|TRẮC\s*NGHIỆM|TRẢ\s*LỜI\s*NGẮN|PHẦN))[\.\:\-\s\)]*/gi;
+      const p1Regex = /(?:^|\n|<\/?[a-zA-Z][^>]*>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*(?:I(?![IVX\w])|1\b|MỘT\b|THỨ\s*NHẤT)|I\s*[\.\:\)]\s*(?=CÂU\s*TRẮC\s*NGHIỆM|CÂU\s*HỎI|TRẮC\s*NGHIỆM|PHẦN))[\.\:\-\s\)]*/gi;
+      const p2Regex = /(?:^|\n|<\/?[a-zA-Z][^>]*>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*(?:II(?![IVX\w])|2\b|HAI\b|THỨ\s*HAI)|II\s*[\.\:\)]\s*(?=CÂU\s*TRẮC\s*NGHIỆM|CÂU\s*HỎI|TRẮC\s*NGHIỆM|ĐÚNG\s*SAI|PHẦN))[\.\:\-\s\)]*/gi;
+      const p3Regex = /(?:^|\n|<\/?[a-zA-Z][^>]*>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*(?:III(?![IVX\w])|3\b|BA\b|THỨ\s*BA)|III\s*[\.\:\)]\s*(?=CÂU\s*TRẮC\s*NGHIỆM|CÂU\s*HỎI|TRẮC\s*NGHIỆM|TRẢ\s*LỜI\s*NGẮN|PHẦN))[\.\:\-\s\)]*/gi;
 
       // Các tiêu đề bổ sung trong trường hợp file không ghi số La Mã hoặc chỉ ghi loại câu hỏi ở đầu dòng
-      const p1AltRegex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*[I123]*[\.\:\-\s]*)?(?:CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*NHIỀU\s*(?:PHƯƠNG\s*ÁN\s*)?LỰA\s*CHỌN|CÂU\s*TRẮC\s*NGHIỆM\s*NHIỀU\s*PHƯƠNG\s*ÁN|TRẮC\s*NGHIỆM\s*NHIỀU\s*PHƯƠNG\s*ÁN|TRẮC\s*NGHIỆM\s*4\s*LỰA\s*CHỌN)/gi;
-      const p2AltRegex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*[I123]*[\.\:\-\s]*)?(?:CÂU\s*TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI|CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI|CÂU\s*HỎI\s*ĐÚNG\s*SAI|TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI)/gi;
-      const p3AltRegex = /(?:^|\n|<[^>]+>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*[I123]*[\.\:\-\s]*)?(?:CÂU\s*TRẮC\s*NGHIỆM\s*(?:YÊU\s*CẦU\s*)?TRẢ\s*LỜI\s*NGẮN|CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*TRẢ\s*LỜI\s*NGẮN|CÂU\s*HỎI\s*TRẢ\s*LỜI\s*NGẮN|TRẮC\s*NGHIỆM\s*TRẢ\s*LỜI\s*NGẮN)/gi;
+      const p1AltRegex = /(?:^|\n|<\/?[a-zA-Z][^>]*>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*[I123]*[\.\:\-\s]*)?(?:CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*NHIỀU\s*(?:PHƯƠNG\s*ÁN\s*)?LỰA\s*CHỌN|CÂU\s*TRẮC\s*NGHIỆM\s*NHIỀU\s*PHƯƠNG\s*ÁN|TRẮC\s*NGHIỆM\s*NHIỀU\s*PHƯƠNG\s*ÁN|TRẮC\s*NGHIỆM\s*4\s*LỰA\s*CHỌN)/gi;
+      const p2AltRegex = /(?:^|\n|<\/?[a-zA-Z][^>]*>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*[I123]*[\.\:\-\s]*)?(?:CÂU\s*TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI|CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI|CÂU\s*HỎI\s*ĐÚNG\s*SAI|TRẮC\s*NGHIỆM\s*ĐÚNG\s*SAI)/gi;
+      const p3AltRegex = /(?:^|\n|<\/?[a-zA-Z][^>]*>)\s*(?:(?:PH\s*[ẦAÀÂa-z]*\s*N|PART)\s*[I123]*[\.\:\-\s]*)?(?:CÂU\s*TRẮC\s*NGHIỆM\s*(?:YÊU\s*CẦU\s*)?TRẢ\s*LỜI\s*NGẮN|CÂU\s*HỎI\s*TRẮC\s*NGHIỆM\s*TRẢ\s*LỜI\s*NGẮN|CÂU\s*HỎI\s*TRẢ\s*LỜI\s*NGẮN|TRẮC\s*NGHIỆM\s*TRẢ\s*LỜI\s*NGẮN)/gi;
 
       const findValidSectionMatches = (regexList: RegExp[], fullText: string): number[] => {
         const indices: number[] = [];
@@ -506,12 +643,11 @@ export default function ExamRepository() {
             if (!isSummaryHeader) {
               const leading = m[0].match(/^[\r\n\s]+/);
               const pos = idx + (leading ? leading[0].length : 0);
-              if (!indices.some(existing => Math.abs(existing - pos) < 15)) {
+              if (!indices.some(existing => Math.abs(existing - pos) < 35)) {
                 indices.push(pos);
               }
             }
           }
-          if (indices.length > 0) break;
         }
         return indices.sort((a, b) => a - b);
       };
@@ -529,20 +665,27 @@ export default function ExamRepository() {
       const firstP3 = p3MatchesAll.find(i => i > Math.max(firstP1, firstP2)) ?? (p3MatchesAll[0] ?? -1);
 
       const lastSectionStart = Math.max(firstP1, firstP2, firstP3, 0);
-      if (lastSectionStart > 0) {
-        const afterLastSection = text.substring(lastSectionStart + 20);
-        // Tìm dấu hiệu kết thúc đề thi ("--- HẾT ---", "BẢNG ĐÁP ÁN", "ĐÁP ÁN VÀ HƯỚNG DẪN GIẢI")
-        const endMarkerRegex = /(?:^|\n)\s*(?:-+\s*H\s*Ế\s*T\s*-+|H\s*Ế\s*T\s*(?:\n|$)|BẢNG\s*ĐÁP\s*ÁN|ĐÁP\s*ÁN\s*(?:VÀ\s*)?(?:HƯỚNG\s*DẪN|LỜI\s*GIẢI)|HƯỚNG\s*DẪN\s*GIẢI\s*CHI\s*TIẾT|LỜI\s*GIẢI\s*CHI\s*TIẾT)/i;
+      const searchStartOffset = lastSectionStart > 0 ? lastSectionStart + 20 : Math.min(200, Math.floor(text.length * 0.2));
+      if (text.length > searchStartOffset) {
+        const afterLastSection = text.substring(searchStartOffset);
+        // Tìm dấu hiệu kết thúc đề thi ("--- HẾT ---", "BẢNG ĐÁP ÁN", "ĐÁP ÁN VÀ HƯỚNG DẪN GIẢI", "HƯỚNG DẪN GIẢI")
+        const endMarkerRegex = /(?:^|\n)\s*(?:-+\s*H\s*Ế\s*T\s*-+|H\s*Ế\s*T\s*(?:[-–—\s]*\n|$)|BẢNG\s*ĐÁP\s*ÁN|PHẦN\s*ĐÁP\s*ÁN|ĐÁP\s*ÁN\s*[-–—:\/]?\s*(?:VÀ\s*)?(?:HƯỚNG\s*DẪN|LỜI\s*GIẢI)|HƯỚNG\s*DẪN\s*GIẢI(?:\s*CHI\s*TIẾT)?\s*(?:\n|$)|LỜI\s*GIẢI\s*CHI\s*TIẾT)/i;
         const endM = afterLastSection.match(endMarkerRegex);
         if (endM && endM.index !== undefined) {
-          const cutIndex = lastSectionStart + 20 + endM.index;
+          const cutIndex = searchStartOffset + endM.index;
           examBodyText = text.substring(0, cutIndex).trim();
           trailingAnswerSection = text.substring(cutIndex).trim();
         }
       }
 
-      // Bóc tách bảng đáp án cho Phần I (1A 2B...) từ trailingAnswerSection (nếu có)
+      // Bóc tách bảng đáp án cho Phần I (1A 2B...) và LỜI GIẢI CHI TIẾT (kèm hình ảnh, đồ thị, bảng dữ liệu) từ trailingAnswerSection (nếu có)
       const p1AnswerKeyMap: Record<number, string> = {};
+      const trailingSolutionsMap: {
+        p1: Record<number, string>;
+        p2: Record<number, string>;
+        p3: Record<number, string>;
+      } = { p1: {}, p2: {}, p3: {} };
+
       if (trailingAnswerSection) {
         const directPairs = Array.from(trailingAnswerSection.matchAll(/(?:Câu\s*)?(\d{1,2})\s*[\.\:\-\)]?\s*\b([A-D])\b/g));
         directPairs.forEach(m => {
@@ -551,6 +694,76 @@ export default function ExamRepository() {
             p1AnswerKeyMap[qNum] = m[2].toUpperCase();
           }
         });
+
+        // Tách lời giải chi tiết theo từng Phần I, II, III ở cuối đề (hỗ trợ cả trường hợp lặp lại Phần I, II, III trong BẢNG ĐÁP ÁN rồi đến HƯỚNG DẪN GIẢI CHI TIẾT)
+        const trailP1Matches = findValidSectionMatches([p1Regex, p1AltRegex], trailingAnswerSection);
+        const trailP2Matches = findValidSectionMatches([p2Regex, p2AltRegex], trailingAnswerSection);
+        const trailP3Matches = findValidSectionMatches([p3Regex, p3AltRegex], trailingAnswerSection);
+
+        const extractSolutionsFromSegment = (
+          secText: string,
+          initialKey: 'p1' | 'p2' | 'p3',
+          allowAutoStageReset: boolean
+        ) => {
+          if (!secText || !secText.trim()) return;
+          const qRgx = /(?:^|\n)\s*(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s*(\d+)\s*\]?\s*(?:[\.\:\-\)]+|(?=\s+(?:Chọn|Ta\s*có|Lời\s*giải|Hướng\s*dẫn|Đáp\s*án|Áp\s*dụng|Vì|Do|Theo|[A-ZÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐa-d]|<img|<table))))/gi;
+          const qMatches = Array.from(secText.matchAll(qRgx));
+          let currentKey: 'p1' | 'p2' | 'p3' = initialKey;
+          let prevQNum = 0;
+
+          for (let i = 0; i < qMatches.length; i++) {
+            const cur = qMatches[i];
+            const next = qMatches[i + 1];
+            const qNum = parseInt(cur[1], 10);
+
+            if (allowAutoStageReset && i > 0 && qNum === 1 && prevQNum > 1) {
+              if (currentKey === 'p1') currentKey = 'p2';
+              else if (currentKey === 'p2') currentKey = 'p3';
+            }
+            prevQNum = qNum;
+
+            const start = cur.index! + cur[0].length;
+            const end = next ? next.index! : secText.length;
+            const rawSol = secText
+              .substring(start, end)
+              .replace(/^(?:[\.\:\-\)\s]+)?(?:\s*(?:Lời\s*giải|Hướng\s*dẫn(?:\s*giải)?|Bài\s*giải|Giải\s*chi\s*tiết|HDG)\s*[\.\:\-]?\s*)?/i, '')
+              .replace(/<\/?u>/gi, '')
+              .trim();
+
+            if (qNum >= 1 && rawSol && (rawSol.length > 2 || /<(?:img|table)\b/i.test(rawSol))) {
+              const targetMap = trailingSolutionsMap[currentKey];
+              const existing = targetMap[qNum] || '';
+              const newHasMedia = /<(?:img|table)\b/i.test(rawSol);
+              const existingHasMedia = /<(?:img|table)\b/i.test(existing);
+              if (!existing || (newHasMedia && !existingHasMedia) || rawSol.length > existing.length) {
+                targetMap[qNum] = rawSol;
+              } else if (newHasMedia && existingHasMedia && !existing.includes(rawSol)) {
+                targetMap[qNum] = `${existing}\n${rawSol}`;
+              }
+            }
+          }
+        };
+
+        const allTrailPts: { key: 'p1' | 'p2' | 'p3'; idx: number }[] = [
+          ...trailP1Matches.map(idx => ({ key: 'p1' as const, idx })),
+          ...trailP2Matches.map(idx => ({ key: 'p2' as const, idx })),
+          ...trailP3Matches.map(idx => ({ key: 'p3' as const, idx })),
+        ].sort((a, b) => a.idx - b.idx);
+
+        if (allTrailPts.length > 0) {
+          for (let i = 0; i < allTrailPts.length; i++) {
+            const cur = allTrailPts[i];
+            const nextIdx = i + 1 < allTrailPts.length ? allTrailPts[i + 1].idx : trailingAnswerSection.length;
+            const isLastSegment = i === allTrailPts.length - 1;
+            extractSolutionsFromSegment(
+              trailingAnswerSection.substring(cur.idx, nextIdx),
+              cur.key,
+              isLastSegment
+            );
+          }
+        } else {
+          extractSolutionsFromSegment(trailingAnswerSection, 'p1', true);
+        }
       }
 
       const idx1 = firstP1 !== -1 && firstP1 < examBodyText.length ? firstP1 : -1;
@@ -626,7 +839,6 @@ export default function ExamRepository() {
 
         const cleanQuestionLead = (str: string) =>
           str
-            .replace(/<img[^>]*>/gi, '')
             .replace(/<\/?u>/gi, '')
             .replace(/^\s*\[IP\]\s*/i, '')
             .replace(/\n{3,}/g, '\n\n')
@@ -903,19 +1115,49 @@ export default function ExamRepository() {
         if (firstOptIndex !== -1 && optMatches.length >= 2) {
           rawStem = content.substring(0, firstOptIndex).trim();
 
+          // Thu thập các ảnh được gán đích danh cho từng phương án A, B, C, D (nếu 4 phương án nằm trên cùng 1 hàng ngang trên PDF)
+          const optionAssignedImgs: Record<string, string[]> = { A: [], B: [], C: [], D: [] };
+          const collectAssignedOptionImages = (srcStr: string): string =>
+            srcStr.replace(
+              /<img[^>]*data-option-letter=["']([A-D])["'][^>]*>/gi,
+              (fullTag, ltr) => {
+                const upper = ltr.toUpperCase();
+                const cleanedTag = fullTag.replace(/\s*data-option-letter=["'][^"']*["']/i, '');
+                if (optionAssignedImgs[upper]) {
+                  optionAssignedImgs[upper].push(cleanedTag);
+                }
+                return '';
+              }
+            );
+
+          rawStem = collectAssignedOptionImages(rawStem).trim();
+
+          const rawBodies: string[] = [];
           for (let k = 0; k < optMatches.length; k++) {
             const curM = optMatches[k];
             const nextM = optMatches[k + 1];
             const start = curM.index! + curM[0].length;
             const end = nextM ? nextM.index! : content.length;
-            let rawBody = content.substring(start, end).trim();
-            const letter = letters[k];
+            rawBodies.push(collectAssignedOptionImages(content.substring(start, end).trim()));
+          }
 
-            // Nếu có thẻ <img class="pdf-figure-img"...> vô tình nằm trong phần phương án thì chuyển nó lên rawStem
-            const strayPdfImgs = rawBody.match(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi);
-            if (strayPdfImgs) {
-              rawStem += '\n' + strayPdfImgs.join('\n');
-              rawBody = rawBody.replace(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi, '').trim();
+          for (let k = 0; k < optMatches.length; k++) {
+            const curM = optMatches[k];
+            const letter = letters[k];
+            let rawBody = rawBodies[k] || '';
+
+            if (optionAssignedImgs[letter] && optionAssignedImgs[letter].length > 0) {
+              rawBody = (rawBody + ' ' + optionAssignedImgs[letter].join(' ')).trim();
+            }
+
+            // Nếu ở cuối phương án D còn dính phần giải thích bắt đầu bằng "Chọn A/B/C/D", "Đáp án:", "Phương pháp:", "Ta có:"
+            if (k === optMatches.length - 1) {
+              const inlineSolMatch = rawBody.match(/(?:^|\n)\s*(?:Phương\s*pháp(?:\s*giải)?\s*[:\.]|Cách\s*giải\s*[:\.]|Giải\s*chi\s*tiết\s*[:\.]|Chọn\s+[A-D]\b[\.\:\-\s]|(?:Đáp\s*án|Đáp\s*số|Kết\s*quả)\s*[:=\.]?\s*[A-D]\b)/i);
+              if (inlineSolMatch && inlineSolMatch.index !== undefined && inlineSolMatch.index > 2) {
+                const leakedSol = rawBody.substring(inlineSolMatch.index).trim();
+                rawBody = rawBody.substring(0, inlineSolMatch.index).trim();
+                solution = solution ? `${leakedSol}\n${solution}` : leakedSol;
+              }
             }
 
             if (/<u>/i.test(curM[0]) || /<u>/i.test(rawBody)) {
@@ -944,6 +1186,15 @@ export default function ExamRepository() {
           }
         }
 
+        if (qNumber && trailingSolutionsMap.p1[qNumber]) {
+          const trailSol = trailingSolutionsMap.p1[qNumber];
+          if (!solution) {
+            solution = trailSol;
+          } else if (/<(?:img|table)\b/i.test(trailSol) && !/<(?:img|table)\b/i.test(solution)) {
+            solution = `${solution}\n${trailSol}`;
+          }
+        }
+
         let correctAnswer = underlineAnswer;
         if (!correctAnswer) {
           const ansM = content.match(/(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả|Chọn)\s*[:=]?\s*\b([A-D])\b/i);
@@ -966,18 +1217,18 @@ export default function ExamRepository() {
         }
 
         return {
-          questionText: questionText || content.replace(/<img[^>]*>/gi, '').replace(/<\/?u>/gi, '').trim(),
+          questionText: questionText || (imageUrl ? '' : content.replace(/<\/?u>/gi, '').trim()),
           questionTextAfter,
           imageUrl,
           options,
           correctAnswer,
           questionType: 'trắc nghiệm' as const,
-          solution: solution.replace(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi, '').replace(/<\/?u>/gi, '').trim()
+          solution: solution.replace(/<\/?u>/gi, '').trim()
         };
       };
 
       // 4. Hàm phân tích câu hỏi PHẦN II (Trắc nghiệm đúng sai 4 ý a, b, c, d)
-      const parseP2Question = (blockText: string) => {
+      const parseP2Question = (blockText: string, qNumber?: number) => {
         let content = blockText.trim();
         let solution = '';
 
@@ -986,6 +1237,15 @@ export default function ExamRepository() {
         if (solM && solM.index !== undefined) {
           solution = content.substring(solM.index + solM[0].length).trim();
           content = content.substring(0, solM.index).trim();
+        }
+
+        if (qNumber && trailingSolutionsMap.p2[qNumber]) {
+          const trailSol = trailingSolutionsMap.p2[qNumber];
+          if (!solution) {
+            solution = trailSol;
+          } else if (/<(?:img|table)\b/i.test(trailSol) && !/<(?:img|table)\b/i.test(solution)) {
+            solution = `${solution}\n${trailSol}`;
+          }
         }
 
         const subLetters = ['a', 'b', 'c', 'd'];
@@ -1012,8 +1272,6 @@ export default function ExamRepository() {
             detectedTfAnswers['c'] = normalizeTfToken(contentSummaryM[3]);
             detectedTfAnswers['d'] = normalizeTfToken(contentSummaryM[4]);
 
-            // Nếu phía sau dòng "Đáp án: ..." trong content còn văn bản (ví dụ lời giải chi tiết không ghi chữ "Lời giải:"),
-            // chuyển phần văn bản phía sau đó sang solution
             const afterSummary = content.substring(contentSummaryM.index + contentSummaryM[0].length).trim();
             if (afterSummary) {
               solution = solution ? `${afterSummary}\n${solution}` : afterSummary;
@@ -1029,7 +1287,6 @@ export default function ExamRepository() {
               detectedTfAnswers['b'] = normalizeTfToken(solSummaryM[2]);
               detectedTfAnswers['c'] = normalizeTfToken(solSummaryM[3]);
               detectedTfAnswers['d'] = normalizeTfToken(solSummaryM[4]);
-              // Loại bỏ dòng tóm tắt đáp án trùng lặp ở đầu lời giải
               const beforeSol = solution.substring(0, solSummaryM.index).trim();
               const afterSol = solution.substring(solSummaryM.index + solSummaryM[0].length).trim();
               solution = [beforeSol, afterSol].filter(Boolean).join('\n').trim();
@@ -1051,9 +1308,8 @@ export default function ExamRepository() {
           });
         }
 
-        // Hàm kiểm tra một đoạn văn bản giữa 2 nhãn (ví dụ giữa a) và b)) có phải là nội dung phát biểu hợp lệ không
-        // Loại bỏ trường hợp bắt nhầm dòng "a) Đúng - b) Đúng..." hoặc dòng hướng dẫn "Trong mỗi ý a), b), c), d)"
         const isValidStatementSegment = (seg: string): boolean => {
+          if (/<(?:img|table)\b/i.test(seg)) return true;
           const clean = seg
             .replace(/<[^>]+>/g, '')
             .replace(/^(?:Đáp\s*án|Đáp\s*số|Kết\s*quả)\s*[:=\-]?\s*/i, '')
@@ -1066,13 +1322,11 @@ export default function ExamRepository() {
           return true;
         };
 
-        // 4.3. Bóc tách 4 ý a), b), c), d) (ưu tiên dấu đóng ngoặc đơn ')' trước, sau đó mới xét '.' hoặc ':')
+        // 4.3. Bóc tách 4 ý a), b), c), d)
         const findStatementCluster = (regex: RegExp): { firstIdx: number; cluster: RegExpMatchArray[]; trailingMatchesAfterD: RegExpMatchArray[] } | null => {
           const allMatches = Array.from(content.matchAll(regex));
           if (allMatches.length < 2) return null;
 
-          // Duyệt từ ĐẦU xuống CUỐI để lấy bộ phát biểu a), b), c), d) đầu tiên của câu hỏi
-          // (tránh bắt nhầm bộ a), b), c), d) thứ hai nằm trong phần giải thích nếu đề không có từ khóa "Lời giải:")
           for (let i = 0; i < allMatches.length; i++) {
             if (allMatches[i][1].toLowerCase() !== 'a') continue;
             const aM = allMatches[i];
@@ -1141,8 +1395,6 @@ export default function ExamRepository() {
           const { firstIdx, cluster: subMatches, trailingMatchesAfterD } = foundCluster;
           rawStem = content.substring(0, firstIdx).trim();
 
-          // Nếu sau ý d) lại xuất hiện thêm một cụm giải thích a) ... b) ... (khi đề không có chữ "Lời giải:"),
-          // tự động tách phần giải thích đó đưa sang solution
           let contentEndPos = content.length;
           if (trailingMatchesAfterD.length >= 2) {
             const secondA = trailingMatchesAfterD.find(m => m[1].toLowerCase() === 'a');
@@ -1156,18 +1408,38 @@ export default function ExamRepository() {
             }
           }
 
+          // Thu thập các ảnh được gán đích danh cho từng ý a, b, c, d (nếu có)
+          const subAssignedImgs: Record<string, string[]> = { a: [], b: [], c: [], d: [] };
+          const collectSubOptionImages = (srcStr: string): string =>
+            srcStr.replace(
+              /<img[^>]*data-option-letter=["']([a-dA-D])["'][^>]*>/gi,
+              (fullTag, ltr) => {
+                const lower = ltr.toLowerCase();
+                const cleanedTag = fullTag.replace(/\s*data-option-letter=["'][^"']*["']/i, '');
+                if (subAssignedImgs[lower]) {
+                  subAssignedImgs[lower].push(cleanedTag);
+                }
+                return '';
+              }
+            );
+
+          rawStem = collectSubOptionImages(rawStem).trim();
+
+          const rawSubBodies: string[] = [];
           for (let k = 0; k < subMatches.length; k++) {
             const curM = subMatches[k];
             const nextM = subMatches[k + 1];
             const start = curM.index! + curM[0].length;
             const end = nextM ? nextM.index! : contentEndPos;
-            let rawBody = content.substring(start, end).trim();
-            const letter = subLetters[k];
+            rawSubBodies.push(collectSubOptionImages(content.substring(start, end).trim()));
+          }
 
-            const strayPdfImgs = rawBody.match(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi);
-            if (strayPdfImgs) {
-              rawStem += '\n' + strayPdfImgs.join('\n');
-              rawBody = rawBody.replace(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi, '').trim();
+          for (let k = 0; k < subMatches.length; k++) {
+            const letter = subLetters[k];
+            let rawBody = rawSubBodies[k] || '';
+
+            if (subAssignedImgs[letter] && subAssignedImgs[letter].length > 0) {
+              rawBody = (rawBody + ' ' + subAssignedImgs[letter].join(' ')).trim();
             }
 
             // Kiểm tra nếu cuối ý d) còn dính phần giải thích bắt đầu bằng "Phương pháp:", "Giải:", "Ta có:", "Chọn"
@@ -1190,6 +1462,7 @@ export default function ExamRepository() {
               detectedTfAnswers[letter] = 'Sai';
             }
 
+            // Bảo toàn hoàn toàn hình ảnh, đồ thị (<img ...>) và bảng dữ liệu (<table class="exam-data-table">...</table>) trong ý a, b, c, d
             const cleanBody = rawBody
               .replace(/<\/?u>/gi, '')
               .replace(/(?:[\(\[\{]\s*(?:Đúng|Sai|Đ|S|True|False|\s*\/?\s*)+\s*[\)\]\}]|(?:->|→|⇒|[-–—:])\s*(?:Đúng|Sai|True|False))\s*\.?\s*$/gi, '')
@@ -1228,9 +1501,8 @@ export default function ExamRepository() {
           });
         }
 
-        // 4.5. Chuẩn hóa định dạng Lời giải của Phần II: tách từng ý giải thích a), b), c), d) xuống dòng riêng để dễ đọc và kiểm tra
+        // 4.5. Chuẩn hóa định dạng Lời giải của Phần II: giữ nguyên 100% hình ảnh, đồ thị, bảng dữ liệu và tách từng ý a), b), c), d) xuống dòng riêng
         let formattedSolution = solution
-          .replace(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi, '')
           .replace(/<\/?u>/gi, '')
           .trim();
 
@@ -1245,7 +1517,7 @@ export default function ExamRepository() {
         const correctAnswer = subLetters.map(l => `${l}) ${detectedTfAnswers[l] || 'Đúng'}`).join(' - ');
 
         return {
-          questionText: questionText || content.replace(/<img[^>]*>/gi, '').replace(/<\/?u>/gi, '').trim(),
+          questionText: questionText || content.replace(/<\/?u>/gi, '').trim(),
           questionTextAfter,
           imageUrl,
           options,
@@ -1256,7 +1528,7 @@ export default function ExamRepository() {
       };
 
       // 5. Hàm phân tích câu hỏi PHẦN III (Trắc nghiệm trả lời ngắn)
-      const parseP3Question = (blockText: string) => {
+      const parseP3Question = (blockText: string, qNumber?: number) => {
         let rawContent = blockText.trim();
         let solution = '';
 
@@ -1265,6 +1537,15 @@ export default function ExamRepository() {
         if (solM && solM.index !== undefined) {
           solution = rawContent.substring(solM.index + solM[0].length).trim();
           rawContent = rawContent.substring(0, solM.index).trim();
+        }
+
+        if (qNumber && trailingSolutionsMap.p3[qNumber]) {
+          const trailSol = trailingSolutionsMap.p3[qNumber];
+          if (!solution) {
+            solution = trailSol;
+          } else if (/<(?:img|table)\b/i.test(trailSol) && !/<(?:img|table)\b/i.test(solution)) {
+            solution = `${solution}\n${trailSol}`;
+          }
         }
 
         let underlineAnswer = '';
@@ -1279,8 +1560,8 @@ export default function ExamRepository() {
         let correctAnswer = underlineAnswer;
         if (!correctAnswer) {
           const ansPatterns = [
-            /(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả|Trả lời)\s*[:=]\s*([^\n]+)/i,
-            /(?:^|[\r\n\s])(?:K\s*ế\s*t\s*q\s*u\s*ả\s*l\s*ấ\s*y\s*đ\s*ế\s*n\s*[^\:]*là|K\s*ế\s*t\s*q\s*u\s*ả\s*là|Đ\s*á\s*p\s*s\s*ố\s*là)\s*([^\n\.]+)/i
+            /(?:^|[\r\n\s])(?:Đáp án|Đáp số|Kết quả|Trả lời)\s*[:=]\s*([^\n<]+)/i,
+            /(?:^|[\r\n\s])(?:K\s*ế\s*t\s*q\s*u\s*ả\s*l\s*ấ\s*y\s*đ\s*ế\s*n\s*[^\:\n<]*là|K\s*ế\s*t\s*q\s*u\s*ả\s*là|Đ\s*á\s*p\s*s\s*ố\s*là)\s*([^\n\.<]+)/i
           ];
 
           for (const pat of ansPatterns) {
@@ -1300,13 +1581,13 @@ export default function ExamRepository() {
         const { questionText, imageUrl, questionTextAfter } = splitStemByFigure(rawContent);
 
         return {
-          questionText: questionText || rawContent.replace(/<img[^>]*>/gi, '').replace(/<\/?u>/gi, '').trim(),
+          questionText: questionText || (imageUrl ? '' : rawContent.replace(/<\/?u>/gi, '').trim()),
           questionTextAfter,
           imageUrl,
           options: [],
           correctAnswer,
           questionType: 'trả lời ngắn' as const,
-          solution: solution.replace(/<img[^>]*class=["'][^"']*pdf-figure-img[^"']*["'][^>]*>/gi, '').replace(/<\/?u>/gi, '').trim()
+          solution: solution.replace(/<\/?u>/gi, '').trim()
         };
       };
 
@@ -1399,8 +1680,19 @@ export default function ExamRepository() {
         }
       }
 
+      const restoreQuestionMedia = (q: any) => ({
+        ...q,
+        questionText: restoreMediaUrlInString(q.questionText),
+        questionTextAfter: q.questionTextAfter ? restoreMediaUrlInString(q.questionTextAfter) : q.questionTextAfter,
+        imageUrl: q.imageUrl ? restoreMediaUrlInString(q.imageUrl) : q.imageUrl,
+        options: (q.options || []).map((opt: string) => restoreMediaUrlInString(opt)),
+        solution: q.solution ? restoreMediaUrlInString(q.solution) : q.solution,
+      });
+
       p1Blocks.forEach((b, idx) => {
-        const parsed = repairDetachedFractionsInQuestion(parseP1Question(b.text, b.num || idx + 1));
+        const parsed = restoreQuestionMedia(
+          repairDetachedFractionsInQuestion(parseP1Question(b.text, b.num || idx + 1))
+        );
         finalQuestions.push({
           ...parsed,
           sectionGroup: 'PHẦN I: Câu hỏi trắc nghiệm nhiều phương án lựa chọn',
@@ -1409,7 +1701,9 @@ export default function ExamRepository() {
       });
 
       p2Blocks.forEach((b, idx) => {
-        const parsed = repairDetachedFractionsInQuestion(parseP2Question(b.text));
+        const parsed = restoreQuestionMedia(
+          repairDetachedFractionsInQuestion(parseP2Question(b.text, b.num || idx + 1))
+        );
         finalQuestions.push({
           ...parsed,
           sectionGroup: 'PHẦN II: Câu trắc nghiệm đúng sai',
@@ -1418,7 +1712,9 @@ export default function ExamRepository() {
       });
 
       p3Blocks.forEach((b, idx) => {
-        const parsed = repairDetachedFractionsInQuestion(parseP3Question(b.text));
+        const parsed = restoreQuestionMedia(
+          repairDetachedFractionsInQuestion(parseP3Question(b.text, b.num || idx + 1))
+        );
         finalQuestions.push({
           ...parsed,
           sectionGroup: 'PHẦN III: Câu trắc nghiệm trả lời ngắn',
@@ -2821,8 +3117,14 @@ export default function ExamRepository() {
                                   </div>
                                   <textarea
                                     rows={3}
-                                    value={q.questionText}
-                                    onChange={(e) => handleUpdateQuestion(globalIdx, 'questionText', e.target.value)}
+                                    value={maskImgTagsForTextarea(q.questionText || '')}
+                                    onChange={(e) =>
+                                      handleUpdateQuestion(
+                                        globalIdx,
+                                        'questionText',
+                                        unmaskImgTagsFromTextarea(e.target.value, q.questionText || '')
+                                      )
+                                    }
                                     placeholder="Nhập nội dung câu hỏi..."
                                     className="w-full min-h-[80px] px-3 py-2 text-xs font-medium text-gray-800 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
                                   />
@@ -2901,8 +3203,14 @@ export default function ExamRepository() {
                                     </div>
                                     <textarea
                                       rows={2}
-                                      value={q.questionTextAfter}
-                                      onChange={(e) => handleUpdateQuestion(globalIdx, 'questionTextAfter', e.target.value)}
+                                      value={maskImgTagsForTextarea(q.questionTextAfter || '')}
+                                      onChange={(e) =>
+                                        handleUpdateQuestion(
+                                          globalIdx,
+                                          'questionTextAfter',
+                                          unmaskImgTagsFromTextarea(e.target.value, q.questionTextAfter || '')
+                                        )
+                                      }
                                       placeholder="Nội dung câu hỏi tiếp theo dưới hình ảnh..."
                                       className="w-full min-h-[60px] px-3 py-2 text-xs font-medium text-gray-800 bg-gray-50 border border-gray-300 rounded-lg focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
                                     />
@@ -2914,15 +3222,17 @@ export default function ExamRepository() {
                                 {sectionType === 'P1' && (
                                   <div>
                                     <label className="block text-[11px] font-bold text-gray-700 mb-1.5">
-                                      Phương án lựa chọn <span className="text-gray-400 font-normal">(Mỗi đáp án 1 dòng riêng — Bấm vào chữ cái để chọn đáp án đúng, bấm nút <b>∑ MathType</b> để sửa công thức):</span>
+                                      Phương án lựa chọn <span className="text-gray-400 font-normal">(Mỗi đáp án 1 dòng riêng — Giữ nguyên hình ảnh, đồ thị, bảng dữ liệu trong từng phương án):</span>
                                     </label>
                                     <div className="space-y-2">
                                       {['A', 'B', 'C', 'D'].map((letter, oIdx) => {
                                         const isChosen = q.correctAnswer && q.correctAnswer.trim().toUpperCase() === letter;
                                         const rawOpt = (q.options && q.options[oIdx]) || '';
                                         const cleanBody = rawOpt.replace(/^[A-D][\.\)]\s*/i, '');
-                                        const autoRows = Math.max(2, Math.ceil((cleanBody.length || 1) / 95));
+                                        const autoRows = Math.max(2, Math.ceil((cleanBody.replace(/<[^>]+>/g, '').length || 1) / 95));
                                         const hasFormula = /[\\^_$=±≤≥≠≈×÷√∫∑∏→⇒⇔α-ωΑ-ΩΔλμωπρστφθ]/.test(cleanBody);
+                                        const hasOptionImg = /<img\b/i.test(cleanBody);
+                                        const hasOptionTable = /<table\b/i.test(cleanBody);
 
                                         return (
                                           <div
@@ -2946,13 +3256,19 @@ export default function ExamRepository() {
                                             <div className="flex-1 min-w-0 space-y-1.5">
                                               <textarea
                                                 rows={autoRows}
-                                                value={cleanBody}
-                                                onChange={(e) => handleUpdateOption(globalIdx, oIdx, e.target.value)}
+                                                value={maskImgTagsForTextarea(cleanBody)}
+                                                onChange={(e) =>
+                                                  handleUpdateOption(
+                                                    globalIdx,
+                                                    oIdx,
+                                                    unmaskImgTagsFromTextarea(e.target.value, cleanBody)
+                                                  )
+                                                }
                                                 placeholder={`Phương án ${letter}...`}
                                                 className="w-full min-h-[44px] px-3 py-2 text-xs text-gray-800 bg-white border border-gray-300 rounded-md focus:ring-1 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
                                               />
                                               <div className="flex items-center justify-between flex-wrap gap-2">
-                                                {hasFormula && cleanBody.trim() ? (
+                                                {(hasFormula || hasOptionImg || hasOptionTable) && cleanBody.trim() ? (
                                                   <div
                                                     onClick={() =>
                                                       setMathEditorTarget({
@@ -2963,8 +3279,8 @@ export default function ExamRepository() {
                                                         initialValue: cleanBody,
                                                       })
                                                     }
-                                                    className="px-2.5 py-1 bg-white/95 hover:bg-teal-50/60 border border-teal-200/90 rounded-md text-xs text-gray-900 flex items-center gap-2 overflow-x-auto cursor-pointer transition-colors"
-                                                    title="Bấm vào để mở trình sửa công thức MathType / Equation"
+                                                    className="px-2.5 py-1.5 bg-white/95 hover:bg-teal-50/60 border border-teal-200/90 rounded-md text-xs text-gray-900 flex items-center gap-2 overflow-x-auto cursor-pointer transition-colors max-w-full"
+                                                    title="Bấm vào để xem hoặc mở trình sửa công thức MathType / Equation"
                                                   >
                                                     <span className="text-[10px] font-semibold text-teal-700 shrink-0">Hiển thị:</span>
                                                     <MathText text={cleanBody} />
@@ -2972,23 +3288,71 @@ export default function ExamRepository() {
                                                 ) : (
                                                   <span />
                                                 )}
-                                                <button
-                                                  type="button"
-                                                  onClick={() =>
-                                                    setMathEditorTarget({
-                                                      globalIdx,
-                                                      field: 'option',
-                                                      optionIdx: oIdx,
-                                                      fieldLabel: `Câu ${idx + 1} - Phương án ${letter}`,
-                                                      initialValue: cleanBody,
-                                                    })
-                                                  }
-                                                  className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-teal-50 text-teal-800 border border-teal-300 rounded-md text-[11px] font-bold cursor-pointer transition-colors shrink-0"
-                                                  title={`Sửa công thức cho đáp án ${letter} theo dạng MathType / Equation`}
-                                                >
-                                                  <span className="font-serif font-bold">∑</span>
-                                                  <span>Sửa công thức (MathType)</span>
-                                                </button>
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                  <label
+                                                    className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-teal-50 text-teal-700 border border-teal-300 rounded-md text-[11px] font-semibold cursor-pointer transition-colors shrink-0"
+                                                    title={`Thêm hình ảnh, đồ thị hoặc bảng vào phương án ${letter}`}
+                                                  >
+                                                    <ImageIcon className="w-3 h-3" />
+                                                    <span>Thêm ảnh/đồ thị</span>
+                                                    <input
+                                                      type="file"
+                                                      accept="image/*"
+                                                      className="hidden"
+                                                      onChange={(e) => {
+                                                        const imgFile = e.target.files?.[0];
+                                                        if (!imgFile) return;
+                                                        const reader = new FileReader();
+                                                        reader.onload = () => {
+                                                          if (typeof reader.result === 'string') {
+                                                            const imgTag = `<img src="${reader.result}" />`;
+                                                            handleUpdateOption(
+                                                              globalIdx,
+                                                              oIdx,
+                                                              cleanBody ? `${cleanBody} ${imgTag}` : imgTag
+                                                            );
+                                                          }
+                                                        };
+                                                        reader.readAsDataURL(imgFile);
+                                                        e.target.value = '';
+                                                      }}
+                                                    />
+                                                  </label>
+                                                  {hasOptionImg && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() =>
+                                                        handleUpdateOption(
+                                                          globalIdx,
+                                                          oIdx,
+                                                          cleanBody.replace(/<img[^>]*>/gi, '').trim()
+                                                        )
+                                                      }
+                                                      className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-red-50 text-red-600 border border-red-200 rounded-md text-[11px] font-semibold cursor-pointer transition-colors shrink-0"
+                                                      title={`Xóa ảnh trong phương án ${letter}`}
+                                                    >
+                                                      <X className="w-3 h-3" />
+                                                      <span>Xóa ảnh</span>
+                                                    </button>
+                                                  )}
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      setMathEditorTarget({
+                                                        globalIdx,
+                                                        field: 'option',
+                                                        optionIdx: oIdx,
+                                                        fieldLabel: `Câu ${idx + 1} - Phương án ${letter}`,
+                                                        initialValue: cleanBody,
+                                                      })
+                                                    }
+                                                    className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-teal-50 text-teal-800 border border-teal-300 rounded-md text-[11px] font-bold cursor-pointer transition-colors shrink-0"
+                                                    title={`Sửa công thức cho đáp án ${letter} theo dạng MathType / Equation`}
+                                                  >
+                                                    <span className="font-serif font-bold">∑</span>
+                                                    <span>Sửa công thức (MathType)</span>
+                                                  </button>
+                                                </div>
                                               </div>
                                             </div>
                                             {isChosen && (
@@ -3006,7 +3370,7 @@ export default function ExamRepository() {
                                 {sectionType === 'P2' && (
                                   <div>
                                     <label className="block text-[11px] font-bold text-gray-700 mb-1.5">
-                                      4 ý lựa chọn đúng / sai <span className="text-gray-400 font-normal">(Bấm chọn Đúng hoặc Sai cho từng ý, bấm <b>∑ MathType</b> để sửa công thức):</span>
+                                      4 ý lựa chọn đúng / sai <span className="text-gray-400 font-normal">(Giữ nguyên hình ảnh, đồ thị, bảng dữ liệu trong từng ý a, b, c, d):</span>
                                     </label>
                                     <div className="space-y-2">
                                       {['a', 'b', 'c', 'd'].map((letter, oIdx) => {
@@ -3015,6 +3379,8 @@ export default function ExamRepository() {
                                         const rawOpt = (q.options && q.options[oIdx]) || '';
                                         const cleanBody = rawOpt.replace(/^[a-d][\.\)]\s*/i, '');
                                         const hasFormula = /[\\^_$=±≤≥≠≈×÷√∫∑∏→⇒⇔α-ωΑ-ΩΔλμωπρστφθ]/.test(cleanBody);
+                                        const hasOptionImg = /<img\b/i.test(cleanBody);
+                                        const hasOptionTable = /<table\b/i.test(cleanBody);
 
                                         return (
                                           <div
@@ -3027,13 +3393,19 @@ export default function ExamRepository() {
                                             <div className="flex-1 min-w-[200px] space-y-1.5">
                                               <textarea
                                                 rows={2}
-                                                value={cleanBody}
-                                                onChange={(e) => handleUpdateOption(globalIdx, oIdx, e.target.value)}
+                                                value={maskImgTagsForTextarea(cleanBody)}
+                                                onChange={(e) =>
+                                                  handleUpdateOption(
+                                                    globalIdx,
+                                                    oIdx,
+                                                    unmaskImgTagsFromTextarea(e.target.value, cleanBody)
+                                                  )
+                                                }
                                                 placeholder={`Nội dung ý ${letter}...`}
                                                 className="w-full min-h-[44px] px-2.5 py-2 text-xs text-gray-800 bg-white border border-gray-300 rounded-md focus:ring-1 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
                                               />
                                               <div className="flex items-center justify-between flex-wrap gap-2">
-                                                {hasFormula && cleanBody.trim() ? (
+                                                {(hasFormula || hasOptionImg || hasOptionTable) && cleanBody.trim() ? (
                                                   <div
                                                     onClick={() =>
                                                       setMathEditorTarget({
@@ -3044,8 +3416,8 @@ export default function ExamRepository() {
                                                         initialValue: cleanBody,
                                                       })
                                                     }
-                                                    className="px-2.5 py-1 bg-white/95 hover:bg-teal-50/60 border border-teal-200/90 rounded-md text-xs text-gray-900 flex items-center gap-2 overflow-x-auto cursor-pointer transition-colors"
-                                                    title="Bấm vào để mở trình sửa công thức MathType / Equation"
+                                                    className="px-2.5 py-1.5 bg-white/95 hover:bg-teal-50/60 border border-teal-200/90 rounded-md text-xs text-gray-900 flex items-center gap-2 overflow-x-auto cursor-pointer transition-colors max-w-full"
+                                                    title="Bấm vào để xem hoặc mở trình sửa công thức MathType / Equation"
                                                   >
                                                     <span className="text-[10px] font-semibold text-teal-700 shrink-0">Hiển thị:</span>
                                                     <MathText text={cleanBody} />
@@ -3053,22 +3425,70 @@ export default function ExamRepository() {
                                                 ) : (
                                                   <span />
                                                 )}
-                                                <button
-                                                  type="button"
-                                                  onClick={() =>
-                                                    setMathEditorTarget({
-                                                      globalIdx,
-                                                      field: 'option',
-                                                      optionIdx: oIdx,
-                                                      fieldLabel: `Câu ${idx + 1} (Phần II) - Ý ${letter})`,
-                                                      initialValue: cleanBody,
-                                                    })
-                                                  }
-                                                  className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-teal-50 text-teal-800 border border-teal-300 rounded-md text-[11px] font-bold cursor-pointer transition-colors shrink-0"
-                                                >
-                                                  <span className="font-serif font-bold">∑</span>
-                                                  <span>Sửa công thức (MathType)</span>
-                                                </button>
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                  <label
+                                                    className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-teal-50 text-teal-700 border border-teal-300 rounded-md text-[11px] font-semibold cursor-pointer transition-colors shrink-0"
+                                                    title={`Thêm hình ảnh, đồ thị hoặc bảng vào ý ${letter})`}
+                                                  >
+                                                    <ImageIcon className="w-3 h-3" />
+                                                    <span>Thêm ảnh/đồ thị</span>
+                                                    <input
+                                                      type="file"
+                                                      accept="image/*"
+                                                      className="hidden"
+                                                      onChange={(e) => {
+                                                        const imgFile = e.target.files?.[0];
+                                                        if (!imgFile) return;
+                                                        const reader = new FileReader();
+                                                        reader.onload = () => {
+                                                          if (typeof reader.result === 'string') {
+                                                            const imgTag = `<img src="${reader.result}" />`;
+                                                            handleUpdateOption(
+                                                              globalIdx,
+                                                              oIdx,
+                                                              cleanBody ? `${cleanBody} ${imgTag}` : imgTag
+                                                            );
+                                                          }
+                                                        };
+                                                        reader.readAsDataURL(imgFile);
+                                                        e.target.value = '';
+                                                      }}
+                                                    />
+                                                  </label>
+                                                  {hasOptionImg && (
+                                                    <button
+                                                      type="button"
+                                                      onClick={() =>
+                                                        handleUpdateOption(
+                                                          globalIdx,
+                                                          oIdx,
+                                                          cleanBody.replace(/<img[^>]*>/gi, '').trim()
+                                                        )
+                                                      }
+                                                      className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-red-50 text-red-600 border border-red-200 rounded-md text-[11px] font-semibold cursor-pointer transition-colors shrink-0"
+                                                      title={`Xóa ảnh trong ý ${letter})`}
+                                                    >
+                                                      <X className="w-3 h-3" />
+                                                      <span>Xóa ảnh</span>
+                                                    </button>
+                                                  )}
+                                                  <button
+                                                    type="button"
+                                                    onClick={() =>
+                                                      setMathEditorTarget({
+                                                        globalIdx,
+                                                        field: 'option',
+                                                        optionIdx: oIdx,
+                                                        fieldLabel: `Câu ${idx + 1} (Phần II) - Ý ${letter})`,
+                                                        initialValue: cleanBody,
+                                                      })
+                                                    }
+                                                    className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-teal-50 text-teal-800 border border-teal-300 rounded-md text-[11px] font-bold cursor-pointer transition-colors shrink-0"
+                                                  >
+                                                    <span className="font-serif font-bold">∑</span>
+                                                    <span>Sửa công thức (MathType)</span>
+                                                  </button>
+                                                </div>
                                               </div>
                                             </div>
                                             <div className="flex items-center gap-1 mt-1 shrink-0">
@@ -3130,32 +3550,110 @@ export default function ExamRepository() {
                                 <div>
                                   <div className="flex items-center justify-between mb-1 flex-wrap gap-1.5">
                                     <label className="block text-[11px] font-bold text-teal-800">
-                                      💡 Lời giải / Hướng dẫn giải chi tiết:
+                                      💡 Lời giải / Hướng dẫn giải chi tiết <span className="text-gray-400 font-normal">(Giữ nguyên hình ảnh, đồ thị, bảng dữ liệu trong lời giải):</span>
                                     </label>
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setMathEditorTarget({
-                                          globalIdx,
-                                          field: 'solution',
-                                          fieldLabel: `Câu ${idx + 1} (${sectionTitle}) - Lời giải chi tiết`,
-                                          initialValue: q.solution || '',
-                                        })
-                                      }
-                                      className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-300 rounded-md text-[11px] font-bold cursor-pointer transition-colors"
-                                    >
-                                      <span className="font-serif font-bold">∑</span>
-                                      <span>Sửa công thức lời giải (MathType)</span>
-                                    </button>
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <label
+                                        className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-white hover:bg-teal-50 text-teal-700 border border-teal-300 rounded-md text-[11px] font-semibold cursor-pointer transition-colors"
+                                        title="Thêm hình ảnh, đồ thị hoặc bảng dữ liệu vào lời giải chi tiết"
+                                      >
+                                        <ImageIcon className="w-3 h-3" />
+                                        <span>Thêm ảnh / đồ thị vào lời giải</span>
+                                        <input
+                                          type="file"
+                                          accept="image/*"
+                                          className="hidden"
+                                          onChange={(e) => {
+                                            const imgFile = e.target.files?.[0];
+                                            if (!imgFile) return;
+                                            const reader = new FileReader();
+                                            reader.onload = () => {
+                                              if (typeof reader.result === 'string') {
+                                                const curSol = q.solution || '';
+                                                const imgTag = `<img src="${reader.result}" />`;
+                                                handleUpdateQuestion(
+                                                  globalIdx,
+                                                  'solution',
+                                                  curSol ? `${curSol}\n${imgTag}` : imgTag
+                                                );
+                                              }
+                                            };
+                                            reader.readAsDataURL(imgFile);
+                                            e.target.value = '';
+                                          }}
+                                        />
+                                      </label>
+                                      {/<img\b/i.test(q.solution || '') && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleUpdateQuestion(
+                                              globalIdx,
+                                              'solution',
+                                              (q.solution || '').replace(/<img[^>]*>/gi, '').trim()
+                                            )
+                                          }
+                                          className="inline-flex items-center gap-1 px-2 py-0.5 bg-white hover:bg-red-50 text-red-600 border border-red-200 rounded-md text-[11px] font-semibold cursor-pointer transition-colors"
+                                          title="Xóa ảnh trong lời giải"
+                                        >
+                                          <X className="w-3 h-3" />
+                                          <span>Xóa ảnh lời giải</span>
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setMathEditorTarget({
+                                            globalIdx,
+                                            field: 'solution',
+                                            fieldLabel: `Câu ${idx + 1} (${sectionTitle}) - Lời giải chi tiết`,
+                                            initialValue: q.solution || '',
+                                          })
+                                        }
+                                        className="inline-flex items-center gap-1 px-2.5 py-0.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-300 rounded-md text-[11px] font-bold cursor-pointer transition-colors"
+                                      >
+                                        <span className="font-serif font-bold">∑</span>
+                                        <span>Sửa công thức lời giải (MathType)</span>
+                                      </button>
+                                    </div>
                                   </div>
                                   <textarea
                                     rows={4}
-                                    value={q.solution || ''}
-                                    onChange={(e) => handleUpdateQuestion(globalIdx, 'solution', e.target.value)}
-                                    placeholder="Nhập lời giải chi tiết, các bước tính toán để học sinh tham khảo sau khi nộp bài..."
+                                    value={maskImgTagsForTextarea(q.solution || '')}
+                                    onChange={(e) =>
+                                      handleUpdateQuestion(
+                                        globalIdx,
+                                        'solution',
+                                        unmaskImgTagsFromTextarea(e.target.value, q.solution || '')
+                                      )
+                                    }
+                                    placeholder="Nhập lời giải chi tiết, các bước tính toán, hình ảnh, đồ thị, bảng dữ liệu để học sinh tham khảo sau khi nộp bài..."
                                     className="w-full min-h-[100px] px-3 py-2.5 text-xs font-medium text-gray-800 bg-teal-50/40 border border-teal-200 rounded-lg focus:bg-white focus:ring-2 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
                                   />
-                                  <MathPreview content={q.solution || ''} label="Xem trước lời giải (MathType / KaTeX):" />
+                                  {(() => {
+                                    const solImgUrls = extractImgSourcesFromHtml(q.solution);
+                                    if (solImgUrls.length === 0) return null;
+                                    return (
+                                      <div className="mt-2 bg-gray-50/90 border border-teal-200 rounded-xl p-3 space-y-2">
+                                        <div className="flex items-center justify-between flex-wrap gap-2">
+                                          <span className="text-[11px] font-bold text-teal-800">
+                                            🖼️ Hình ảnh / Đồ thị trong lời giải ({solImgUrls.length} ảnh):
+                                          </span>
+                                        </div>
+                                        <div className="flex flex-wrap gap-3 justify-center bg-white p-2.5 rounded-lg border border-gray-200">
+                                          {solImgUrls.map((srcUrl, sImgIdx) => (
+                                            <img
+                                              key={sImgIdx}
+                                              src={srcUrl}
+                                              alt={`Hình minh họa lời giải câu ${idx + 1} (${sImgIdx + 1})`}
+                                              className="max-h-60 max-w-full object-contain rounded"
+                                            />
+                                          ))}
+                                        </div>
+                                      </div>
+                                    );
+                                  })()}
+                                  <MathPreview content={q.solution || ''} label="Xem trước lời giải (MathType / Hình ảnh / Đồ thị / Bảng dữ liệu):" />
                                 </div>
                               </div>
                           );

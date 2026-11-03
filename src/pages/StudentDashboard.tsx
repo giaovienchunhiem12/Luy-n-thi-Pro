@@ -24,7 +24,8 @@ import {
   GraduationCap
 } from 'lucide-react';
 import { db } from '../firebase';
-import { collection, onSnapshot, getDocs } from 'firebase/firestore';
+import { collection, onSnapshot, getDocs, doc } from 'firebase/firestore';
+import { loadSavedBannerConfig, normalizeBannerConfig, TeacherBannerConfig } from '../components/TeacherBannerSection';
 
 export interface StudentSubmission {
   id?: string;
@@ -72,6 +73,20 @@ export default function StudentDashboard() {
   const [submissions, setSubmissions] = useState<StudentSubmission[]>([]);
   const [loadingAssignments, setLoadingAssignments] = useState(true);
   const [loadingSubmissions, setLoadingSubmissions] = useState(true);
+  const [bannerConfig, setBannerConfig] = useState<TeacherBannerConfig>(() => loadSavedBannerConfig());
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      doc(db, 'systemConfig', 'teacherBanner'),
+      (snap) => {
+        if (snap.exists()) {
+          setBannerConfig(normalizeBannerConfig(snap.data() as Partial<TeacherBannerConfig>));
+        }
+      },
+      () => {}
+    );
+    return () => unsub();
+  }, []);
 
   // 1. Tải thông tin học sinh từ collection classes
   useEffect(() => {
@@ -484,43 +499,71 @@ export default function StudentDashboard() {
 
         {/* Nội dung theo từng mục menu */}
         <div className="p-4 md:p-8 space-y-6 max-w-6xl w-full mx-auto">
-          {/* BANNER TỔNG QUAN HỌC TẬP (Chuẩn giao diện Giáo viên) */}
-          <div className="bg-gradient-to-r from-teal-700 via-teal-600 to-indigo-700 rounded-3xl p-6 md:p-8 text-white shadow-md relative overflow-hidden">
-            <div className="relative z-10 space-y-2.5">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-white/20 backdrop-blur-xs text-white">
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>Tổng quan Cổng Học Sinh</span>
-              </span>
-              <h2 className="text-xl md:text-2xl font-black">
-                Xin chào, {cleanStudentName || studentName}!
-              </h2>
-              <p className="text-xs md:text-sm text-teal-100 max-w-2xl leading-relaxed">
-                Chào mừng bạn quay trở lại. Hãy theo dõi các thông báo mới từ nhà trường, làm bài thi được giao và tra cứu bảng điểm học tập ngay bên dưới.
-              </p>
+          {/* BANNER TỔNG QUAN HỌC TẬP (Chuẩn giao diện Giáo viên & đồng bộ Banner) */}
+          <div className={`bg-gradient-to-r ${bannerConfig.themeGradient || 'from-teal-700 via-teal-600 to-indigo-700'} rounded-3xl p-6 md:p-8 text-white shadow-md relative overflow-hidden`}>
+            <div className="relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+              <div className={`${bannerConfig.showOnStudentDashboard && bannerConfig.imageUrl ? 'lg:col-span-6' : 'lg:col-span-12'} space-y-2.5`}>
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-white/20 backdrop-blur-xs text-white">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Tổng quan Cổng Học Sinh</span>
+                </span>
+                <h2 className="text-xl md:text-2xl font-black">
+                  Xin chào, {cleanStudentName || studentName}!
+                </h2>
+                <p className="text-xs md:text-sm text-teal-100 max-w-2xl leading-relaxed">
+                  Chào mừng bạn quay trở lại. Hãy theo dõi các thông báo mới từ nhà trường, làm bài thi được giao và tra cứu bảng điểm học tập ngay bên dưới.
+                </p>
 
-              <div className="pt-3 flex flex-wrap gap-3">
-                <button
-                  onClick={() => setActiveTab('assignments')}
-                  className="px-4 py-2.5 bg-white text-teal-800 hover:bg-teal-50 font-bold rounded-xl text-xs transition-all shadow-sm cursor-pointer flex items-center gap-2"
-                >
-                  <FileText className="w-3.5 h-3.5 text-teal-600" />
-                  <span>Xem bài thi được giao ({assignments.length})</span>
-                </button>
-                <button
-                  onClick={() => setActiveTab('scores')}
-                  className="px-4 py-2.5 bg-teal-900/60 hover:bg-teal-900 text-white font-bold rounded-xl text-xs transition-all border border-teal-400/40 cursor-pointer flex items-center gap-2"
-                >
-                  <Award className="w-3.5 h-3.5 text-amber-300" />
-                  <span>Xem bảng điểm cá nhân ({totalCompleted})</span>
-                </button>
-                <button
-                  onClick={() => setActiveTab('notifications')}
-                  className="px-4 py-2.5 bg-teal-900/60 hover:bg-teal-900 text-white font-bold rounded-xl text-xs transition-all border border-teal-400/40 cursor-pointer flex items-center gap-2"
-                >
-                  <Bell className="w-3.5 h-3.5 text-teal-200" />
-                  <span>Thông báo mới ({notifications.length})</span>
-                </button>
+                <div className="pt-3 flex flex-wrap gap-3">
+                  <button
+                    onClick={() => setActiveTab('assignments')}
+                    className="px-4 py-2.5 bg-white text-teal-800 hover:bg-teal-50 font-bold rounded-xl text-xs transition-all shadow-sm cursor-pointer flex items-center gap-2"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-teal-600" />
+                    <span>Xem bài thi được giao ({assignments.length})</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('scores')}
+                    className="px-4 py-2.5 bg-teal-900/60 hover:bg-teal-900 text-white font-bold rounded-xl text-xs transition-all border border-teal-400/40 cursor-pointer flex items-center gap-2"
+                  >
+                    <Award className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Xem bảng điểm cá nhân ({totalCompleted})</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('notifications')}
+                    className="px-4 py-2.5 bg-teal-900/60 hover:bg-teal-900 text-white font-bold rounded-xl text-xs transition-all border border-teal-400/40 cursor-pointer flex items-center gap-2"
+                  >
+                    <Bell className="w-3.5 h-3.5 text-teal-200" />
+                    <span>Thông báo mới ({notifications.length})</span>
+                  </button>
+                </div>
               </div>
+
+              {bannerConfig.showOnStudentDashboard && bannerConfig.imageUrl && (
+                <div className="lg:col-span-6">
+                  <div
+                    style={{ height: `${Math.max(170, Math.min(300, bannerConfig.bannerHeight || 210))}px` }}
+                    className="relative w-full rounded-2xl overflow-hidden border-2 border-white/25 bg-slate-900/30 shadow-lg"
+                  >
+                    <img
+                      src={bannerConfig.imageUrl}
+                      alt="School Banner"
+                      style={{
+                        objectFit: bannerConfig.objectFit || 'fill',
+                        objectPosition: `center ${bannerConfig.objectPositionY ?? 50}%`
+                      }}
+                      className="w-full h-full block select-none"
+                    />
+                    {bannerConfig.bannerCaption && (
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950/80 via-slate-950/40 to-transparent px-4 py-2">
+                        <span className="text-[11px] font-semibold text-white/95 truncate block">
+                          {bannerConfig.bannerCaption}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

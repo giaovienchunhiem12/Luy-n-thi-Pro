@@ -125,20 +125,54 @@ const PRESET_FORMULAS: { category: string; items: { name: string; latex: string 
 ];
 
 /**
+ * Tạm thời thay thế các thẻ HTML (<img ...>, <table ...>...</table>, <...>) bằng token an toàn
+ * để các biểu thức chính quy sửa công thức KHÔNG BAO GIỜ chạm vào chuỗi base64 của hình ảnh.
+ */
+function protectHtmlBlocksForFormulaFix(input: string): {
+  safeText: string;
+  restore: (text: string) => string;
+} {
+  if (!input) {
+    return { safeText: '', restore: (t) => t };
+  }
+  const blocks: string[] = [];
+  const safeText = input.replace(
+    /<table\b[\s\S]*?<\/table>|<\/?[a-zA-Z][^>]*>/gi,
+    (match) => {
+      const idx = blocks.length;
+      blocks.push(match);
+      return `\x00HTML_PRESERVE_${idx}\x00`;
+    }
+  );
+  return {
+    safeText,
+    restore: (text: string) =>
+      text.replace(/\x00HTML_PRESERVE_(\d+)\x00/g, (_, idxStr) => blocks[Number(idxStr)] || ''),
+  };
+}
+
+/**
  * Tự động sửa lỗi công thức trong một chuỗi văn bản hoặc đáp án:
  * - Giải mã ký tự PUA / ô vuông ▯ thành dấu =
  * - Chuyển biểu thức dạng a/b đơn giản hoặc tử/mẫu bị xuống dòng thành \frac{a}{b}
+ * - Bảo toàn 100% các thẻ <img ...> và <table ...> ở mọi vị trí
  */
 export function autoFixFormulaText(rawText: string): string {
   if (!rawText) return '';
-  let text = decodePdfMathSymbols(rawText);
+  const { safeText, restore } = protectHtmlBlocksForFormulaFix(rawText);
+  let text = decodePdfMathSymbols(safeText);
 
   // Thay thế các ký tự hộp lỗi font còn sót
   text = text.replace(/[\u25AF\u25A1\uFFFD]+/g, '=');
 
   // Nếu một phương án có dạng 2 dòng bị tách tử/mẫu (ví dụ dòng 1 kết thúc bằng "=" và dòng 2 có tử/mẫu)
+  // Lưu ý: Không gộp nếu dòng 2 là hình ảnh hoặc bảng dữ liệu
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-  if (lines.length === 2 && /=\s*$/.test(lines[0])) {
+  if (
+    lines.length === 2 &&
+    /=\s*$/.test(lines[0]) &&
+    !/\x00HTML_PRESERVE_\d+\x00/.test(lines[1])
+  ) {
     const tokens = lines[1].split(/\s+/).filter(Boolean);
     if (tokens.length === 2) {
       text = `${lines[0]} $\\frac{${tokens[0]}}{${tokens[1]}}$`;
@@ -151,6 +185,10 @@ export function autoFixFormulaText(rawText: string): string {
   text = text.replace(
     /(^|[\s=+\-(])([A-Za-zα-ωΑ-ΩΔλμωπρστφθ0-9]+(?:\^\{?[0-9+\-]+\}?|_\{?[0-9a-zA-Z]+\}?)?)\s*\/\s*([A-Za-zα-ωΑ-ΩΔλμωπρστφθ0-9]+(?:\^\{?[0-9+\-]+\}?|_\{?[0-9a-zA-Z]+\}?)?)(?=$|[\s.,;)\-+])/g,
     (match, prefix, num, den) => {
+      // Không biến đổi nếu chứa token HTML bảo vệ
+      if (num.includes('\x00') || den.includes('\x00')) {
+        return match;
+      }
       // Không biến đổi đơn vị đo thông thường như m/s, km/h, J/kg, W/m, vòng/phút nếu đứng sau khoảng trắng không có dấu =
       if (/^(?:m|km|cm|mm|J|kJ|W|kW|N|C|V|mol|g|kg|vòng)$/i.test(num) && /^(?:s|h|phút|giây|kg|g|mol|m|cm|lít|K)$/i.test(den) && !/=/.test(prefix)) {
         return match;
@@ -159,12 +197,12 @@ export function autoFixFormulaText(rawText: string): string {
     }
   );
 
-  return text.trim();
+  return restore(text).trim();
 }
 
 /**
  * Khôi phục phân số bị tách rời tử số (nhảy lên cuối câu hỏi) và mẫu số (rớt xuống dòng cuối của đáp án D)
- * đồng thời chuẩn hóa toàn bộ ký tự lỗi font ▯ trong một câu hỏi
+ * đồng thời chuẩn hóa toàn bộ ký tự lỗi font ▯ trong một câu hỏi (bảo toàn 100% hình ảnh và bảng dữ liệu)
  */
 export function repairDetachedFractionsInQuestion<T extends {
   questionText: string;
@@ -174,16 +212,17 @@ export function repairDetachedFractionsInQuestion<T extends {
   questionType?: string;
   solution?: string;
 }>(q: T): T {
-  let questionText = decodePdfMathSymbols(q.questionText || '').replace(/[\u25AF\u25A1\uFFFD]+/g, '=');
+  const cleanPuaPreservingHtml = (str: string): string => {
+    const { safeText, restore } = protectHtmlBlocksForFormulaFix(str);
+    return restore(decodePdfMathSymbols(safeText).replace(/[\u25AF\u25A1\uFFFD]+/g, '='));
+  };
+
+  let questionText = cleanPuaPreservingHtml(q.questionText || '');
   let questionTextAfter = q.questionTextAfter
-    ? decodePdfMathSymbols(q.questionTextAfter).replace(/[\u25AF\u25A1\uFFFD]+/g, '=')
+    ? cleanPuaPreservingHtml(q.questionTextAfter)
     : q.questionTextAfter;
-  let options = (q.options || []).map((opt) =>
-    decodePdfMathSymbols(opt || '').replace(/[\u25AF\u25A1\uFFFD]+/g, '=')
-  );
-  let solution = q.solution
-    ? decodePdfMathSymbols(q.solution).replace(/[\u25AF\u25A1\uFFFD]+/g, '=')
-    : q.solution;
+  let options = (q.options || []).map((opt) => cleanPuaPreservingHtml(opt || ''));
+  let solution = q.solution ? cleanPuaPreservingHtml(q.solution) : q.solution;
 
   // Khôi phục tự động cho câu hỏi Phần II (Đúng/Sai) nếu 4 ý a), b), c), d) bị dính vào nội dung câu hỏi
   // và các ô phương án a), b), c), d) đang bị gán nhầm chữ "Đúng -" / "Sai -"
@@ -240,18 +279,23 @@ export function repairDetachedFractionsInQuestion<T extends {
   if (options.length >= 2) {
     const lastIdx = options.length - 1;
     const lastOptLines = options[lastIdx].split('\n').map((l) => l.trim()).filter(Boolean);
+    const lastLineText = lastOptLines[lastOptLines.length - 1] || '';
 
     // Tìm các phương án kết thúc bằng dấu "=" (trên dòng đầu tiên của phương án đó)
     const danglingIndices: number[] = [];
     options.forEach((opt, idx) => {
       const firstLine = opt.split('\n')[0].trim();
-      if (/=\s*$/.test(firstLine)) {
+      if (/=\s*$/.test(firstLine) && !/<(?:img|table)\b/i.test(firstLine)) {
         danglingIndices.push(idx);
       }
     });
 
-    if (danglingIndices.length > 0 && lastOptLines.length >= 2) {
-      const denTokens = lastOptLines[lastOptLines.length - 1].split(/\s+/).filter(Boolean);
+    if (
+      danglingIndices.length > 0 &&
+      lastOptLines.length >= 2 &&
+      !/<(?:img|table)\b/i.test(lastLineText)
+    ) {
+      const denTokens = lastLineText.split(/\s+/).filter(Boolean);
       const targetStem = questionTextAfter && questionTextAfter.trim() ? questionTextAfter : questionText;
 
       // Tìm các ký hiệu tử số bị nhảy lên cuối câu hỏi ngay sau dấu '?' hoặc ':'
@@ -299,6 +343,40 @@ export function repairDetachedFractionsInQuestion<T extends {
     options,
     solution: solution ? autoFixFormulaText(solution) : solution,
   };
+}
+
+/**
+ * Ẩn chuỗi mã base64 dài của thẻ <img ...> thành nhãn gọn [Hình ảnh 1], [Hình ảnh 2] trong ô nhập <textarea>
+ * để giáo viên dễ dàng chỉnh sửa văn bản/công thức mà không bị rối bởi hàng chục nghìn ký tự base64,
+ * đồng thời khôi phục lại nguyên vẹn 100% thẻ <img ...> khi lưu thay đổi.
+ */
+export function maskImgTagsForTextarea(rawText: string): string {
+  if (!rawText || !/<img\b/i.test(rawText)) return rawText || '';
+  let idx = 0;
+  return rawText.replace(/<img\b[^>]*>/gi, () => {
+    idx++;
+    return `[Hình ảnh ${idx}]`;
+  });
+}
+
+export function unmaskImgTagsFromTextarea(displayText: string, originalRawText: string): string {
+  if (!originalRawText || !/<img\b/i.test(originalRawText)) return displayText;
+  const imgs = originalRawText.match(/<img\b[^>]*>/gi) || [];
+  if (imgs.length === 0) return displayText;
+  let result = displayText;
+  imgs.forEach((imgTag, i) => {
+    const token = `[Hình ảnh ${i + 1}]`;
+    if (result.includes(token)) {
+      result = result.replace(token, () => imgTag);
+    }
+  });
+  return result;
+}
+
+export function extractImgSourcesFromHtml(rawText?: string): string[] {
+  if (!rawText || !/<img\b/i.test(rawText)) return [];
+  const matches = Array.from(rawText.matchAll(/<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi));
+  return matches.map((m) => m[1]).filter(Boolean);
 }
 
 export const MathEquationModal: React.FC<MathEquationModalProps> = ({
@@ -349,6 +427,8 @@ export const MathEquationModal: React.FC<MathEquationModalProps> = ({
 
   if (!isOpen) return null;
 
+  const displayValue = maskImgTagsForTextarea(value);
+
   const insertAtCursor = (snippet: string, cursorOffset = 0) => {
     const el = textareaRef.current;
     if (!el) {
@@ -356,9 +436,9 @@ export const MathEquationModal: React.FC<MathEquationModalProps> = ({
       return;
     }
 
-    const start = el.selectionStart ?? value.length;
-    const end = el.selectionEnd ?? value.length;
-    const selectedText = value.substring(start, end);
+    const start = el.selectionStart ?? displayValue.length;
+    const end = el.selectionEnd ?? displayValue.length;
+    const selectedText = displayValue.substring(start, end);
 
     let finalSnippet = snippet;
     // Nếu người dùng đang bôi đen một đoạn và bấm vào nút Phân số \frac{a}{b}, đưa đoạn bôi đen lên tử số
@@ -368,8 +448,8 @@ export const MathEquationModal: React.FC<MathEquationModalProps> = ({
       finalSnippet = `$\\sqrt{${selectedText}}$`;
     }
 
-    const nextValue = value.substring(0, start) + finalSnippet + value.substring(end);
-    setValue(nextValue);
+    const nextDisplay = displayValue.substring(0, start) + finalSnippet + displayValue.substring(end);
+    setValue(unmaskImgTagsFromTextarea(nextDisplay, value));
 
     setTimeout(() => {
       el.focus();
@@ -764,8 +844,8 @@ export const MathEquationModal: React.FC<MathEquationModalProps> = ({
             <textarea
               ref={textareaRef}
               rows={3}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
+              value={displayValue}
+              onChange={(e) => setValue(unmaskImgTagsFromTextarea(e.target.value, value))}
               placeholder="Ví dụ: $\lambda = \frac{Q}{m}$ hoặc $Q = m\lambda\Delta t$..."
               className="w-full px-3.5 py-2.5 text-xs sm:text-sm font-mono text-gray-900 bg-white border-2 border-teal-500/80 rounded-xl focus:ring-2 focus:ring-teal-500 focus:outline-none leading-relaxed resize-y"
             />

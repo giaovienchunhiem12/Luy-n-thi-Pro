@@ -43,10 +43,10 @@ export async function compressBase64Image(
           return resolve(dataUri);
         }
 
-        // Kiểm tra xem có phải ảnh công thức toán inline nhỏ không (tỉ lệ nhỏ hoặc chiều cao nhỏ)
-        const isInlineFormula = height <= 120 || (width / height > 3 && height <= 200);
-        const targetMaxWidth = isInlineFormula ? 500 : maxWidth;
-        const targetMaxHeight = isInlineFormula ? 80 : maxHeight;
+        // Kiểm tra xem có phải ảnh công thức toán inline rất nhỏ không (chiều cao <= 60px)
+        const isSmallInlineFormula = height <= 60 && width <= 400;
+        const targetMaxWidth = isSmallInlineFormula ? 500 : maxWidth;
+        const targetMaxHeight = isSmallInlineFormula ? 120 : maxHeight;
 
         // Tính toán tỉ lệ co dãn
         if (width > targetMaxWidth || height > targetMaxHeight) {
@@ -63,11 +63,12 @@ export async function compressBase64Image(
           return resolve(dataUri);
         }
 
-        // Vẽ nền mờ/trong suốt nếu có
-        ctx.clearRect(0, 0, width, height);
+        // Tô nền trắng sạch sẽ để đồ thị / hình vẽ PNG trong suốt không bị đen nền khi nén
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
 
-        // Thử xuất dạng WebP (nén rất tốt và hỗ trợ trong suốt)
+        // Thử xuất dạng WebP (nén rất tốt và sắc nét)
         let compressed = '';
         try {
           compressed = canvas.toDataURL('image/webp', quality);

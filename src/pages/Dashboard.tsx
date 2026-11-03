@@ -7,6 +7,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import ClassManagement from '../components/ClassManagement';
 import ExamRepository from '../components/ExamRepository';
 import OnlineAssignment from '../components/OnlineAssignment';
+import TeacherBannerSection from '../components/TeacherBannerSection';
 import {
   GraduationCap,
   BookOpen,
@@ -353,32 +354,11 @@ export default function Dashboard() {
       default:
         return (
           <div className="flex-1 bg-gray-50/60 p-6 md:p-8 overflow-y-auto space-y-6">
-            {/* Banner chào mừng */}
-            <div className="bg-gradient-to-r from-teal-700 via-teal-600 to-indigo-700 rounded-3xl p-6 md:p-8 text-white shadow-md relative overflow-hidden">
-              <div className="relative z-10 space-y-2">
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-white/20 backdrop-blur-xs text-white">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>Trang Tổng quan Giáo viên</span>
-                </span>
-                <h1 className="text-xl md:text-2xl font-black">
-                  Xin chào, {activeUser?.displayName || activeUser?.email || 'Thầy Điền Văn'}!
-                </h1>
-                <p className="text-xs md:text-sm text-teal-100 max-w-2xl leading-relaxed">
-                  Chào mừng thầy cô trở lại hệ thống Luyện Thi Pro. Dưới đây là các mục quản lý, thông báo, lớp học, kho đề, giao bài và tài khoản.
-                </p>
-                <div className="pt-3 flex flex-wrap gap-3">
-                  <button onClick={() => setView('classes')} className="px-4 py-2 bg-white text-teal-800 font-bold rounded-xl text-xs shadow-sm hover:bg-teal-50 transition-all cursor-pointer flex items-center gap-1.5">
-                    <GraduationCap className="w-4 h-4 text-teal-600" /> Quản lý Lớp
-                  </button>
-                  <button onClick={() => setView('exams')} className="px-4 py-2 bg-teal-900/60 text-white font-bold rounded-xl text-xs border border-teal-400/40 hover:bg-teal-900 transition-all cursor-pointer flex items-center gap-1.5">
-                    <BookOpen className="w-4 h-4 text-teal-300" /> Kho Đề Thi
-                  </button>
-                  <button onClick={() => setView('assign')} className="px-4 py-2 bg-teal-900/60 text-white font-bold rounded-xl text-xs border border-teal-400/40 hover:bg-teal-900 transition-all cursor-pointer flex items-center gap-1.5">
-                    <Send className="w-4 h-4 text-teal-300" /> Giao Bài Online
-                  </button>
-                </div>
-              </div>
-            </div>
+            {/* Banner chào mừng & Khung thiết kế Banner tùy chỉnh */}
+            <TeacherBannerSection
+              teacherName={activeUser?.displayName || activeUser?.email || 'Thầy Điền Văn'}
+              onNavigate={(targetView) => setView(targetView)}
+            />
 
             {/* Grid 5 thẻ mục: Thông báo, Quản lý lớp, Kho đề, Giao bài online, Tài khoản */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

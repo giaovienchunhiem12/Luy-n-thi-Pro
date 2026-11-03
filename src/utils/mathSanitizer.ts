@@ -192,6 +192,19 @@ const SYMBOL_PUA_MAP: Record<number, string> = {
  */
 export function decodePdfMathSymbols(input: string): string {
   if (!input) return '';
+
+  // Nếu chuỗi có chứa thẻ <img ...>, tách riêng thẻ <img ...> để không quét qua dữ liệu base64
+  if (/<img\b/i.test(input)) {
+    const imgs: string[] = [];
+    const masked = input.replace(/<img\b[^>]*>/gi, (m) => {
+      const idx = imgs.length;
+      imgs.push(m);
+      return `\x00DEC_IMG_${idx}\x00`;
+    });
+    const decoded = decodePdfMathSymbols(masked);
+    return decoded.replace(/\x00DEC_IMG_(\d+)\x00/g, (_, i) => imgs[Number(i)] || '');
+  }
+
   let out = '';
   for (let i = 0; i < input.length; i++) {
     const code = input.charCodeAt(i);
@@ -718,10 +731,36 @@ export async function preprocessDocxXmlForMathAndImages(zip: any): Promise<{
 
     if (relsFile) {
       const relsXml = await relsFile.async('string');
-      const relMatches = Array.from(relsXml.matchAll(/<Relationship[^>]*Id=["']([^"']+)["'][^>]*Target=["']([^"']+)["'][^>]*>/gi)) as RegExpMatchArray[];
-      for (const m of relMatches) {
-        if (m[1] && m[2]) {
-          relsMap.set(m[1], m[2]);
+      const relTags = Array.from(relsXml.matchAll(/<Relationship\b[^>]*>/gi)) as RegExpMatchArray[];
+      for (const tagMatch of relTags) {
+        const tag = tagMatch[0];
+        const idM = tag.match(/\bId=["']([^"']+)["']/i);
+        const targetM = tag.match(/\bTarget=["']([^"']+)["']/i);
+        if (idM && idM[1] && targetM && targetM[1]) {
+          relsMap.set(idM[1], targetM[1]);
+        }
+      }
+    }
+
+    // Đọc trước các file nhị phân OLE (.bin) của MathType (nếu có) để trích xuất LaTeX
+    const oleLatexCache = new Map<string, string>();
+    for (const [, target] of relsMap.entries()) {
+      if (/\.bin$/i.test(target)) {
+        const normalizedPath = target.startsWith('word/')
+          ? target
+          : 'word/' + target.replace(/^\.\.\//, '').replace(/^\//, '');
+        const oleFile = zip.file(normalizedPath);
+        if (oleFile) {
+          try {
+            const bytes = await oleFile.async('uint8array');
+            const extracted = extractLatexFromMathTypeOle(bytes);
+            if (extracted) {
+              oleLatexCache.set(target, extracted);
+              oleLatexCache.set(normalizedPath, extracted);
+            }
+          } catch {
+            // ignore
+          }
         }
       }
     }
@@ -734,48 +773,38 @@ export async function preprocessDocxXmlForMathAndImages(zip: any): Promise<{
       // Kiểm tra có phải MathType hoặc Equation không
       const isEquation = /ProgID=["'](?:Equation|MathType)/i.test(match);
 
-      // Tìm ảnh xem trước (companion preview image) của công thức MathType
-      const imgIdMatch = match.match(/(?:<v:imagedata|<a:blip)[^>]*r:(?:id|embed)=["']([^"']+)["']/i);
-      if (imgIdMatch) {
-        const imgRId = imgIdMatch[1];
-        const target = relsMap.get(imgRId) || '';
-        if (target) {
-          const fileName = target.split('/').pop() || target;
-          // Đánh dấu ảnh này là ảnh công thức để KHÔNG HÓA ẢNH
-          formulaImageTargets.add(fileName);
-          formulaImageTargets.add(target);
-        }
-      }
-
       // Tìm nội dung LaTeX trong thuộc tính alt của shape hoặc descr
       const altMatch = match.match(/(?:alt|descr|title)=["']([^"']+)["']/i);
       if (altMatch && altMatch[1].trim()) {
         const altText = decodeHtmlEntities(altMatch[1].trim());
-        if (altText && !altText.startsWith('image')) {
+        if (altText && !/^image\d*\b/i.test(altText) && (isEquation || /^LaTeX:/i.test(altText))) {
           latexFormula = altText.replace(/^LaTeX:\s*/i, '').trim();
         }
       }
 
-      // Nếu chưa có LaTeX, thử đọc file nhị phân OLE .bin tương ứng
+      // Nếu chưa có LaTeX, tra cứu từ cache file nhị phân OLE .bin tương ứng
       if (!latexFormula && isEquation) {
         const oleIdMatch = match.match(/<o:OLEObject[^>]*r:id=["']([^"']+)["']/i);
         if (oleIdMatch) {
-          let olePath = relsMap.get(oleIdMatch[1]) || '';
-          if (olePath) {
-            if (!olePath.startsWith('word/')) {
-              olePath = 'word/' + olePath.replace(/^\//, '');
-            }
-            const oleFile = zip.file(olePath);
-            if (oleFile) {
-              // Sẽ đọc không đồng bộ nếu cần, hoặc từ cache
-            }
+          const oleTarget = relsMap.get(oleIdMatch[1]) || '';
+          if (oleTarget) {
+            latexFormula = oleLatexCache.get(oleTarget) || '';
           }
         }
       }
 
       if (latexFormula) {
+        const imgIdMatch = match.match(/(?:<v:imagedata|<a:blip)[^>]*r:(?:id|embed)=["']([^"']+)["']/i);
+        if (imgIdMatch) {
+          const target = relsMap.get(imgIdMatch[1]) || '';
+          if (target) {
+            const fileName = target.split('/').pop() || target;
+            formulaImageTargets.add(fileName);
+            formulaImageTargets.add(target);
+          }
+        }
         const cleanLatex = latexFormula.startsWith('$') ? latexFormula : `$${latexFormula}$`;
-        return `<w:r><w:t xml:space="preserve"> ${cleanLatex} </w:t></w:r>`;
+        return `<w:t xml:space="preserve"> ${cleanLatex} </w:t>`;
       }
 
       return match;
@@ -799,18 +828,97 @@ export async function preprocessDocxXmlForMathAndImages(zip: any): Promise<{
       return '';
     });
 
-    // 4. Quét qua tất cả file media trong zip:
-    // Mọi file có đuôi .wmf hoặc .emf trong Word hầu như 100% là ảnh công thức MathType cũ
-    // Đánh dấu để loại trừ khỏi ảnh thực tế
-    relsMap.forEach((target) => {
-      if (/\.(?:wmf|emf)$/i.test(target)) {
-        const fileName = target.split('/').pop() || target;
-        formulaImageTargets.add(fileName);
-        formulaImageTargets.add(target);
-      }
-    });
+    // 3.4. Chuẩn hóa các thuộc tính VML (<v:imagedata o:relid=...>, <v:fill r:id=...>, <v:oval>, <v:image>)
+    // để Mammoth không bỏ sót bất kỳ hình ảnh nào trong <w:pict>
+    documentXml = documentXml
+      .replace(/<v:imagedata\b([^>]*?)\bo:relid=["']([^"']+)["']([^>]*)>/gi, (full: string, p1: string, relId: string, p2: string) => {
+        if (/\br:id=["']/i.test(full)) return full;
+        return `<v:imagedata${p1} r:id="${relId}"${p2}>`;
+      })
+      .replace(/<v:fill\b[^>]*\b(?:r:id|o:relid)=["']([^"']+)["'][^>]*\/?>/gi, '<v:imagedata r:id="$1"/>')
+      .replace(/<v:image\b([^>]*?)\b(?:r:id|o:relid)=["']([^"']+)["']([^>]*)\/?>/gi, '<v:imagedata r:id="$2"/>')
+      .replace(/<(\/?)v:oval\b/gi, '<$1v:shape');
 
-    // Lưu lại document.xml đã được chuẩn hóa vào zip
+    // 3.5. Giải phóng hình ảnh / đồ thị nằm trong <mc:AlternateContent> của Word (2010-365)
+    documentXml = documentXml.replace(
+      /<mc:AlternateContent\b[^>]*>([\s\S]*?)<\/mc:AlternateContent>/gi,
+      (fullMatch: string, inner: string) => {
+        const choiceM = inner.match(/<mc:Choice\b[^>]*>([\s\S]*?)<\/mc:Choice>/i);
+        const fallbackM = inner.match(/<mc:Fallback\b[^>]*>([\s\S]*?)<\/mc:Fallback>/i);
+        const choiceContent = choiceM ? choiceM[1] : '';
+        const fallbackContent = fallbackM ? fallbackM[1] : '';
+
+        const fallbackHasDirectImg = /(?:<v:imagedata|<pic:pic)\b/i.test(fallbackContent);
+        const choiceHasDirectImg = /(?:<pic:pic|<a:blip|<v:imagedata)\b/i.test(choiceContent);
+
+        // Nếu <mc:Choice> có <pic:pic> chuẩn của <w:drawing>, ưu tiên <mc:Choice> để ảnh giữ đúng vị trí inline
+        // (vì <w:pict> trong <mc:Fallback> bị Mammoth đẩy xuống cuối đoạn văn bằng .toExtra())
+        if (/<pic:pic\b/i.test(choiceContent)) {
+          return choiceContent;
+        }
+        // Nếu <mc:Fallback> có <v:imagedata> (ví dụ hình nhóm <wpg:wgp> đã được Word gộp thành 1 ảnh phẳng trong Fallback)
+        if (fallbackHasDirectImg) {
+          return fallbackContent;
+        }
+        if (choiceHasDirectImg) {
+          return choiceContent;
+        }
+        if (/<w:txbxContent\b/i.test(fallbackContent)) {
+          return fallbackContent;
+        }
+        if (/<w:txbxContent\b/i.test(choiceContent)) {
+          return choiceContent;
+        }
+        return fullMatch;
+      }
+    );
+
+    // 3.6. Chuẩn hóa <wp:inline> và <wp:anchor> chứa hình nhóm (<wpg:wgp>) hoặc hình trong khung (<wps:wsp>)
+    // Mammoth chỉ đọc đường dẫn trực tiếp: a:graphic > a:graphicData > pic:pic > pic:blipFill > a:blip
+    documentXml = documentXml.replace(
+      /<(wp:inline|wp:anchor)\b([^>]*)>([\s\S]*?)<\/\1>/gi,
+      (fullMatch: string, tagName: string, attrs: string, inner: string) => {
+        // Nếu có <a:blip r:embed="rId..."/> nằm sâu bên trong <wpg:wgp> hoặc <wps:wsp>
+        const blipMatches = Array.from(inner.matchAll(/<a:blip\b[^>]*\br:embed=["']([^"']+)["'][^>]*>/gi));
+        if (blipMatches.length > 0 && (/<wpg:wgp\b/i.test(inner) || /<wps:wsp\b/i.test(inner) || !/<pic:pic\b/i.test(inner))) {
+          const uniqueRIds = Array.from(new Set(blipMatches.map((m) => m[1])));
+          const normalizedGraphics = uniqueRIds
+            .map(
+              (rId) =>
+                `<a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="${rId}"/></pic:blipFill></pic:pic></a:graphicData></a:graphic>`
+            )
+            .join('');
+          return `<wp:inline${attrs}>${normalizedGraphics}</wp:inline>`;
+        }
+        return fullMatch;
+      }
+    );
+
+    // 3.7. Chuyển đổi <w:pict> chứa <v:imagedata r:id="..."/> (không chứa hộp văn bản <w:txbxContent>)
+    // sang <w:drawing><wp:inline>...<a:blip r:embed="..."/>...</w:drawing>
+    // Lý do: Trong Mammoth, <w:pict> gọi .toExtra() làm đẩy hình ảnh xuống cuối đoạn văn <w:p>,
+    // còn <w:drawing><wp:inline> giữ nguyên hình ảnh tại đúng vị trí dòng/chữ (trong cả câu hỏi, đáp án và lời giải)!
+    documentXml = documentXml.replace(
+      /<w:pict\b[^>]*>([\s\S]*?)<\/w:pict>/gi,
+      (fullMatch: string, inner: string) => {
+        if (/<w:txbxContent\b/i.test(inner)) {
+          return fullMatch;
+        }
+        const imgDataMatches = Array.from(inner.matchAll(/<v:imagedata\b[^>]*\br:id=["']([^"']+)["'][^>]*>/gi));
+        if (imgDataMatches.length > 0) {
+          const uniqueRIds = Array.from(new Set(imgDataMatches.map((m) => m[1])));
+          return uniqueRIds
+            .map(
+              (rId) =>
+                `<w:drawing><wp:inline><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="${rId}"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>`
+            )
+            .join('');
+        }
+        return fullMatch;
+      }
+    );
+
+    // 4. Lưu lại document.xml đã được chuẩn hóa vào zip
     zip.file('word/document.xml', documentXml);
 
     return { zip, formulaImageTargets };
@@ -826,11 +934,36 @@ export async function preprocessDocxXmlForMathAndImages(zip: any): Promise<{
  * - Hỗ trợ \(...\) và \[...\]
  * - Hỗ trợ thẻ chú thích LaTeX trong MathType image / OLE
  * - Tự động nhận diện công thức LaTeX chưa được bọc dấu $
+ * - BẢO VỆ TUYỆT ĐỐI 100% thẻ <img src="data:image/..."> ở mọi vị trí (câu hỏi, đáp án, lời giải)
  */
 export function sanitizeMathContent(content: string): string {
   if (!content) return '';
 
-  let processed = decodePdfMathSymbols(content);
+  // 0. Nếu có ảnh công thức MathType đặc biệt chứa alt="LaTeX:..." hoặc alt="math:..." thì chuyển thành LaTeX trước
+  let preProcessed = content.replace(
+    /<img[^>]*alt=["'](?:LaTeX:\s*|math:\s*)([^"']+)["'][^>]*>/gi,
+    (_, alt) => {
+      const clean = alt.trim();
+      if (!clean) return '';
+      return clean.startsWith('$') && clean.endsWith('$') ? clean : `$${clean}$`;
+    }
+  );
+
+  // Loại bỏ thẻ img rỗng (không có src hợp lệ) hoặc ảnh vector WMF/EMF không hiển thị được trên trình duyệt
+  preProcessed = preProcessed.replace(
+    /<img\b(?![^>]*\bsrc=["'](?:data:image\/(?!x-wmf|x-emf|wmf|emf)|https?:\/\/|blob:|\/)[^"']+["'])[^>]*>/gi,
+    ''
+  );
+
+  // Bảo vệ toàn bộ các thẻ <img ...> hợp lệ bằng placeholder để KHÔNG BẤT KỲ regex toán học nào chạm vào dữ liệu base64
+  const preservedImages: string[] = [];
+  preProcessed = preProcessed.replace(/<img\b[^>]*>/gi, (imgTag) => {
+    const idx = preservedImages.length;
+    preservedImages.push(imgTag);
+    return `\x00PRESERVED_IMG_${idx}\x00`;
+  });
+
+  let processed = decodePdfMathSymbols(preProcessed);
 
   // 1. Chuyển đổi các khối MathML sang LaTeX
   processed = processed.replace(/<math\b[\s\S]*?<\/math>/gi, (match) => {
@@ -848,23 +981,11 @@ export function sanitizeMathContent(content: string): string {
   processed = processed.replace(/\\\[([\s\S]*?)\\\]/g, (_, math) => `$$${math.trim()}$$`);
   processed = processed.replace(/\\\(([\s\S]*?)\\\)/g, (_, math) => `$${math.trim()}$`);
 
-  // 4. Nếu có ảnh MathType chứa alt="...LaTeX..." thì chuyển thành công thức LaTeX thay vì ảnh
-  processed = processed.replace(/<img[^>]*alt=["'](?:LaTeX:\s*|math:\s*)?([^"']+)["'][^>]*>/gi, (match, alt) => {
-    const clean = alt.trim();
-    // Nếu alt thực sự là công thức toán (chứa ký hiệu toán hoặc LaTeX)
-    if (clean.startsWith('$') && clean.endsWith('$')) return clean;
-    if (/[\\_{}^=+\-*/±≤≥≠→]/.test(clean)) {
-      return `$${clean}$`;
-    }
-    // Nếu là alt ảnh mô tả bình thường (ví dụ: "Đồ thị", "Hình vẽ"), giữ nguyên thẻ img
-    return match;
-  });
-
-  // 5. Loại bỏ thẻ img rỗng (không có src hoặc src rỗng) sinh ra từ ảnh công thức bị lọc
-  processed = processed.replace(/<img\b(?![^>]*\bsrc=["']data:image\/[^"']+["'])[^>]*>/gi, '');
-
-  // 6. Tự động bọc các biểu thức toán học LaTeX phổ biến nếu giáo viên quên gõ dấu $
+  // 4. Tự động bọc các biểu thức toán học LaTeX phổ biến nếu giáo viên quên gõ dấu $
   processed = wrapUnenclosedLatex(processed);
+
+  // 5. Khôi phục nguyên vẹn 100% các thẻ <img ...> đã bảo vệ
+  processed = processed.replace(/\x00PRESERVED_IMG_(\d+)\x00/g, (_, idxStr) => preservedImages[Number(idxStr)] || '');
 
   return processed;
 }
@@ -872,16 +993,16 @@ export function sanitizeMathContent(content: string): string {
 function applyOutsideMath(text: string, fn: (plain: string) => string): string {
   if (!text) return '';
   const parts: string[] = [];
-  const mathRegex = /(\$\$[\s\S]*?\$\$|\$[^\$]+?\$)/g;
+  const mathOrTagRegex = /(\$\$[\s\S]*?\$\$|\$[^\$]+?\$|<\/?[a-zA-Z][^>]*>)/g;
   let lastIndex = 0;
   let match;
 
-  while ((match = mathRegex.exec(text)) !== null) {
+  while ((match = mathOrTagRegex.exec(text)) !== null) {
     if (match.index > lastIndex) {
       parts.push(fn(text.substring(lastIndex, match.index)));
     }
     parts.push(match[0]);
-    lastIndex = mathRegex.lastIndex;
+    lastIndex = mathOrTagRegex.lastIndex;
   }
 
   if (lastIndex < text.length) {
