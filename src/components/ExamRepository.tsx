@@ -370,9 +370,50 @@ export default function ExamRepository() {
         const cells = Array.from(tbl.querySelectorAll('th, td'));
         if (rows.length === 0 || cells.length < 2) continue;
 
+        // Xử lý đặc biệt cho Bảng dàn trang 2 cột (1 bên là Câu hỏi + Phương án A, B, C, D / a, b, c, d, 1 bên là Hình ảnh / Đồ thị):
+        // Nếu để mặc định khi phẳng hóa bảng, ô cột 2 (chứa <img>) sẽ rơi xuống SAU phương án D / d), làm ảnh câu hỏi bị gắn nhầm vào đáp án D!
+        // Ta tự động di chuyển thẻ <img> của ô hình sang ngay TRƯỚC phương án A. / a) (hoặc trước Lời giải) trong ô văn bản!
+        if (rows.length <= 2 && cells.length === 2) {
+          const c0Text = (cells[0].textContent || '').replace(/\s+/g, ' ').trim();
+          const c1Text = (cells[1].textContent || '').replace(/\s+/g, ' ').trim();
+          const c0Imgs = Array.from(cells[0].querySelectorAll('img'));
+          const c1Imgs = Array.from(cells[1].querySelectorAll('img'));
+
+          const isC1FigureOnly =
+            c1Imgs.length > 0 &&
+            c0Imgs.length === 0 &&
+            c1Text.length <= 45 &&
+            !/^(?:[A-D][\.\:\)]|[a-d]\))\s/.test(c1Text);
+          const isC0FigureOnly =
+            c0Imgs.length > 0 &&
+            c1Imgs.length === 0 &&
+            c0Text.length <= 45 &&
+            !/^(?:[A-D][\.\:\)]|[a-d]\))\s/.test(c0Text);
+
+          if (isC1FigureOnly || isC0FigureOnly) {
+            const textCell = isC1FigureOnly ? cells[0] : cells[1];
+            const figCell = isC1FigureOnly ? cells[1] : cells[0];
+            const figHtml = figCell.innerHTML;
+            const textHtml = textCell.innerHTML;
+            // Tìm vị trí phương án đầu tiên A. hoặc a) trong ô văn bản để chèn hình minh họa ngay phía trên phương án A. / a)
+            const firstOptMatch = textHtml.match(
+              /(?<=^|[\r\n\s>])(?:<(?:b|strong|u|span)[^>]*>\s*)*(?:A[\.\:\)]|a\))(?:\s*<\/(?:b|strong|u|span)>)*\s/
+            );
+            if (firstOptMatch && firstOptMatch.index !== undefined && firstOptMatch.index > 5) {
+              textCell.innerHTML =
+                textHtml.substring(0, firstOptMatch.index) +
+                `<br/>${figHtml}<br/>` +
+                textHtml.substring(firstOptMatch.index);
+              figCell.innerHTML = '';
+            }
+          }
+        }
+
         // Kiểm tra xem có phải bảng dàn trang (chứa câu hỏi, lời giải, bảng đáp án, tiêu đề sở/trường, hoặc dàn phương án A. B. C. D. / ảnh minh họa ngang hàng) không
         const questionHeaderMatches = tblText.match(/(?:^|\s)(?:Câu|Bài|CAU|BÀI)\s+\d+\b/gi) || [];
-        const hasAdminOrSectionHeader = /(?:SỞ\s+GIÁO\s+DỤC|SỞ\s+GD|TRƯỜNG\s+THPT|ĐỀ\s+CHÍNH\s+THỨC|PHẦN\s+(?:I|II|III|1|2|3)\b|BẢNG\s*ĐÁP\s*ÁN|HƯỚNG\s*DẪN\s*GIẢI|LỜI\s*GIẢI\s*CHI\s*TIẾT)/i.test(tblText);
+        const hasAdminOrSectionHeader =
+          /(?:SỞ\s+GIÁO\s+DỤC|SỞ\s+GD|TRƯỜNG\s+THPT|ĐỀ\s+CHÍNH\s+THỨC|BẢNG\s*ĐÁP\s*ÁN|HƯỚNG\s*DẪN\s*GIẢI|LỜI\s*GIẢI\s*CHI\s*TIẾT)/i.test(tblText) ||
+          /(?:^|[\n.;:])\s*PHẦN\s+(?:I|II|III|1|2|3)\s*(?:[\.\:\-]|CÂU\b)/i.test(tblText);
         const hasSolutionContent = /(?:^|\s)(?:Lời\s*giải|Hướng\s*dẫn(?:\s*giải)?|Bài\s*giải|Giải\s*chi\s*tiết|HDG|Chọn\s+[A-D]\b)/i.test(tblText);
         const optionStartingCells = cells.filter(c => {
           const ct = (c.textContent || '').trim();
@@ -385,10 +426,11 @@ export default function ExamRepository() {
         const isOptionGridLayout = optionStartingCells.length >= 2;
         const isAnswerKeyTable = answerKeyCells.length >= 2;
         const hasEmbeddedImg = tbl.querySelector('img') !== null;
-        const hasLongProseCell = cells.some(c => ((c.textContent || '').replace(/\s+/g, ' ').trim().length > 45));
+        const hasLongProseCell = cells.some(c => ((c.textContent || '').replace(/\s+/g, ' ').trim().length > 55));
         const isSideBySideTextAndImageLayout =
-          (rows.length === 1 && cells.length === 2) ||
-          (hasEmbeddedImg && hasLongProseCell);
+          rows.length <= 2 &&
+          cells.length <= 3 &&
+          ((rows.length === 1 && cells.length === 2) || (hasEmbeddedImg && hasLongProseCell));
 
         if (
           questionHeaderMatches.length >= 1 ||
@@ -422,7 +464,7 @@ export default function ExamRepository() {
 
         if (trHtmlList.length > 0) {
           const compactTableHtml = `<table class="exam-data-table"><tbody>${trHtmlList.join('')}</tbody></table>`;
-          const token = ` __EXAM_DATA_TABLE_${preservedDataTables.length}__ `;
+          const token = ` @@EXAM@TABLE@TOKEN@${preservedDataTables.length}@@ `;
           preservedDataTables.push(compactTableHtml);
           tbl.replaceWith(doc.createTextNode(token));
         }
@@ -438,7 +480,7 @@ export default function ExamRepository() {
     processed = processed.replace(/<img\b[^>]*>/gi, (imgTag) => {
       const idx = preservedHtmlImages.length;
       preservedHtmlImages.push(imgTag);
-      return ` __EXAM_HTML_IMG_${idx}__ `;
+      return ` @@EXAM@IMG@TOKEN@${idx}@@ `;
     });
 
     processed = processed
@@ -451,12 +493,8 @@ export default function ExamRepository() {
       .replace(/&amp;/gi, '&');
 
     // 5. Khôi phục các thẻ <img ...> và bảng dữ liệu <table class="exam-data-table">...</table>
-    preservedHtmlImages.forEach((imgTag, idx) => {
-      processed = processed.replace(`__EXAM_HTML_IMG_${idx}__`, () => imgTag);
-    });
-    preservedDataTables.forEach((tblHtml, idx) => {
-      processed = processed.replace(`__EXAM_DATA_TABLE_${idx}__`, () => tblHtml);
-    });
+    processed = processed.replace(/@@EXAM@IMG@TOKEN@(\d+)@@/g, (_, idxStr) => preservedHtmlImages[Number(idxStr)] || '');
+    processed = processed.replace(/@@EXAM@TABLE@TOKEN@(\d+)@@/g, (_, idxStr) => preservedDataTables[Number(idxStr)] || '');
 
     return sanitizeMathContent(processed);
   };
@@ -745,7 +783,7 @@ export default function ExamRepository() {
           allowAutoStageReset: boolean
         ) => {
           if (!secText || !secText.trim()) return;
-          const qRgx = /(?:^|\n)\s*(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s*(\d+)\s*\]?\s*(?:[\.\:\-\)]+|(?=\s+(?:Chọn|Ta\s*có|Lời\s*giải|Hướng\s*dẫn|Đáp\s*án|Áp\s*dụng|Vì|Do|Theo|[A-ZÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐa-d]|<img|<table))))/gi;
+          const qRgx = /(?:^|\n)\s*(?:\[?\s*(?:Câu|Bài|CAU|BÀI)\s*(?:số\s*)?(\d+)\s*(?:\([^\)\n]{1,30}\))?\s*\]?\s*(?:[\.\:\-\)]+|(?=\s+(?:Chọn|Ta\s*có|Lời\s*giải|Hướng\s*dẫn|Đáp\s*án|Đáp\s*số|Kết\s*quả|Áp\s*dụng|Vì|Do|Theo|Từ|[A-ZÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴÈÉẸẺẼÊỀẾỆỂỄÌÍỊỈĨÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠÙÚỤỦŨƯỪỨỰỬỮỲÝỴỶỸĐa-d0-9]|<img|<table))))/gi;
           const qMatches = Array.from(secText.matchAll(qRgx));
           let currentKey: 'p1' | 'p2' | 'p3' = initialKey;
           let prevQNum = 0;
@@ -766,6 +804,7 @@ export default function ExamRepository() {
             const rawSol = secText
               .substring(start, end)
               .replace(/^(?:[\.\:\-\)\s]+)?(?:\s*(?:Lời\s*giải|Hướng\s*dẫn(?:\s*giải)?|Bài\s*giải|Giải\s*chi\s*tiết|HDG)\s*[\.\:\-]?\s*)?/i, '')
+              .replace(/\s*data-option-letter=["'][^"']*["']/gi, '')
               .replace(/<\/?u>/gi, '')
               .trim();
 
@@ -1197,6 +1236,22 @@ export default function ExamRepository() {
                 rawBody = rawBody.substring(0, inlineSolMatch.index).trim();
                 solution = solution ? `${leakedSol}\n${solution}` : leakedSol;
               }
+
+              // Nếu thân câu hỏi chưa có hình/bảng và các phương án A, B, C đều không có hình/bảng,
+              // nhưng ở cuối phương án D lại có thẻ hình minh họa / đồ thị / bảng dữ liệu đứng ở dòng riêng sau nội dung phương án D
+              // (do hình vẽ nổi hoặc bảng 2 cột trong Word/PDF đặt ở cuối khối câu hỏi), chuyển hình/bảng đó về lại thân câu hỏi!
+              const otherOptsHaveMedia = rawBodies
+                .slice(0, -1)
+                .some((b, idx) => /<(?:img|table)\b/i.test(b) || (optionAssignedImgs[letters[idx]]?.length || 0) > 0);
+              if (!/<(?:img|table)\b/i.test(rawStem) && !otherOptsHaveMedia && !(optionAssignedImgs[letter]?.length)) {
+                const trailingStemMediaMatch = rawBody.match(
+                  /^([^\n<]+?)\s*(?:\n+\s*)((?:<(?:img(?![^>]*math-formula-img)[^>]*|table\b[\s\S]*?<\/table)>\s*)+)$/i
+                );
+                if (trailingStemMediaMatch) {
+                  rawBody = trailingStemMediaMatch[1].trim();
+                  rawStem = `${rawStem}\n${trailingStemMediaMatch[2].trim()}`.trim();
+                }
+              }
             }
 
             if (/<u>/i.test(curM[0]) || /<u>/i.test(rawBody)) {
@@ -1298,9 +1353,9 @@ export default function ExamRepository() {
         // 4.2. Nhận diện và CẮT BỎ dòng tóm tắt đáp án (VD: "Đáp án: a) Đúng - b) Đúng - c) Sai - d) Đúng" hoặc "Đáp án: Đ - Đ - S - Đ")
         // Tránh tuyệt đối việc bộ tách a), b), c), d) bắt nhầm vào chữ a), b), c), d) của dòng "Đáp án:"!
         const summaryPatterns = [
-          /(?:^|[\r\n\s])(?:(?:Đáp\s*án|Đáp\s*số|Kết\s*quả|Trả\s*lời)\s*[:=\-\.]?\s*)?a\s*[\.\:\)\-]\s*(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+b\s*[\.\:\)\-]\s*(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+c\s*[\.\:\)\-]\s*(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+d\s*[\.\:\)\-]\s*(đúng|sai|đ|s|true|false)\b[^\n]*/i,
-          /(?:^|[\r\n\s])(?:Đáp\s*án|Đáp\s*số|Kết\s*quả|Trả\s*lời)\s*[:=\-\.]\s*(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+(đúng|sai|đ|s|true|false)\b[^\n]*/i,
-          /(?:^|[\r\n\s])(?:Đáp\s*án|Đáp\s*số|Kết\s*quả|Trả\s*lời)\s*[:=\-\.]\s*([ĐSđs])\s*[\-\–\,\;\s]?\s*([ĐSđs])\s*[\-\–\,\;\s]?\s*([ĐSđs])\s*[\-\–\,\;\s]?\s*([ĐSđs])\b[^\n]*/i
+          /(?:^|[\r\n\s])(?:(?:Đáp\s*án|Đáp\s*số|Kết\s*quả|Trả\s*lời)\s*[:=\-\.]?\s*)?a\s*[\.\:\)\-]\s*(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+b\s*[\.\:\)\-]\s*(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+c\s*[\.\:\)\-]\s*(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+d\s*[\.\:\)\-]\s*(đúng|sai|đ|s|true|false)\b[^\n<]*/i,
+          /(?:^|[\r\n\s])(?:Đáp\s*án|Đáp\s*số|Kết\s*quả|Trả\s*lời)\s*[:=\-\.]\s*(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+(đúng|sai|đ|s|true|false)\b[\s\-\–\—\,\;\/\|]+(đúng|sai|đ|s|true|false)\b[^\n<]*/i,
+          /(?:^|[\r\n\s])(?:Đáp\s*án|Đáp\s*số|Kết\s*quả|Trả\s*lời)\s*[:=\-\.]\s*([ĐSđs])\s*[\-\–\,\;\s]?\s*([ĐSđs])\s*[\-\–\,\;\s]?\s*([ĐSđs])\s*[\-\–\,\;\s]?\s*([ĐSđs])\b[^\n<]*/i
         ];
 
         for (const sRgx of summaryPatterns) {
@@ -1488,6 +1543,22 @@ export default function ExamRepository() {
                 const leakedSol = rawBody.substring(inlineSolMatch.index).trim();
                 rawBody = rawBody.substring(0, inlineSolMatch.index).trim();
                 solution = solution ? `${leakedSol}\n${solution}` : leakedSol;
+              }
+
+              // Nếu thân câu hỏi Phần II chưa có hình/bảng và các ý a, b, c đều không có hình/bảng,
+              // nhưng ở cuối ý d) lại có thẻ hình minh họa / đồ thị / bảng dữ liệu đứng ở dòng riêng sau câu phát biểu d)
+              // (do hình vẽ nổi hoặc bảng dàn trang 2 cột đặt hình ở cuối khối câu hỏi), chuyển hình/bảng đó về lại thân câu hỏi!
+              const otherSubsHaveMedia = rawSubBodies
+                .slice(0, -1)
+                .some((b, idx) => /<(?:img|table)\b/i.test(b) || (subAssignedImgs[subLetters[idx]]?.length || 0) > 0);
+              if (!/<(?:img|table)\b/i.test(rawStem) && !otherSubsHaveMedia && !(subAssignedImgs[letter]?.length)) {
+                const trailingStemMediaMatch = rawBody.match(
+                  /^([^\n<]+?)\s*(?:\n+\s*)((?:<(?:img(?![^>]*math-formula-img)[^>]*|table\b[\s\S]*?<\/table)>\s*)+)$/i
+                );
+                if (trailingStemMediaMatch) {
+                  rawBody = trailingStemMediaMatch[1].trim();
+                  rawStem = `${rawStem}\n${trailingStemMediaMatch[2].trim()}`.trim();
+                }
               }
             }
 

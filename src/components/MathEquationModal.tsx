@@ -141,13 +141,13 @@ function protectHtmlBlocksForFormulaFix(input: string): {
     (match) => {
       const idx = blocks.length;
       blocks.push(match);
-      return `\x00HTML_PRESERVE_${idx}\x00`;
+      return `@@HTML@PRESERVE@TOKEN@${idx}@@`;
     }
   );
   return {
     safeText,
     restore: (text: string) =>
-      text.replace(/\x00HTML_PRESERVE_(\d+)\x00/g, (_, idxStr) => blocks[Number(idxStr)] || ''),
+      text.replace(/@@HTML@PRESERVE@TOKEN@(\d+)@@/g, (_, idxStr) => blocks[Number(idxStr)] || ''),
   };
 }
 
@@ -171,7 +171,7 @@ export function autoFixFormulaText(rawText: string): string {
   if (
     lines.length === 2 &&
     /=\s*$/.test(lines[0]) &&
-    !/\x00HTML_PRESERVE_\d+\x00/.test(lines[1])
+    !/@@HTML@PRESERVE@TOKEN@\d+@@/.test(lines[1])
   ) {
     const tokens = lines[1].split(/\s+/).filter(Boolean);
     if (tokens.length === 2) {
@@ -186,7 +186,7 @@ export function autoFixFormulaText(rawText: string): string {
     /(^|[\s=+\-(])([A-Za-zα-ωΑ-ΩΔλμωπρστφθ0-9]+(?:\^\{?[0-9+\-]+\}?|_\{?[0-9a-zA-Z]+\}?)?)\s*\/\s*([A-Za-zα-ωΑ-ΩΔλμωπρστφθ0-9]+(?:\^\{?[0-9+\-]+\}?|_\{?[0-9a-zA-Z]+\}?)?)(?=$|[\s.,;)\-+])/g,
     (match, prefix, num, den) => {
       // Không biến đổi nếu chứa token HTML bảo vệ
-      if (num.includes('\x00') || den.includes('\x00')) {
+      if (num.includes('@@') || den.includes('@@')) {
         return match;
       }
       // Không biến đổi đơn vị đo thông thường như m/s, km/h, J/kg, W/m, vòng/phút nếu đứng sau khoảng trắng không có dấu =
@@ -351,23 +351,36 @@ export function repairDetachedFractionsInQuestion<T extends {
  * đồng thời khôi phục lại nguyên vẹn 100% thẻ <img ...> khi lưu thay đổi.
  */
 export function maskImgTagsForTextarea(rawText: string): string {
-  if (!rawText || !/<img\b/i.test(rawText)) return rawText || '';
-  let idx = 0;
-  return rawText.replace(/<img\b[^>]*>/gi, () => {
-    idx++;
-    return `[Hình ảnh ${idx}]`;
-  });
+  if (!rawText || !/<(?:img|table)\b/i.test(rawText)) return rawText || '';
+  let tblIdx = 0;
+  let imgIdx = 0;
+  return rawText
+    .replace(/<table\b[\s\S]*?<\/table>/gi, () => {
+      tblIdx++;
+      return `[Bảng dữ liệu ${tblIdx}]`;
+    })
+    .replace(/<img\b[^>]*>/gi, () => {
+      imgIdx++;
+      return `[Hình ảnh ${imgIdx}]`;
+    });
 }
 
 export function unmaskImgTagsFromTextarea(displayText: string, originalRawText: string): string {
-  if (!originalRawText || !/<img\b/i.test(originalRawText)) return displayText;
-  const imgs = originalRawText.match(/<img\b[^>]*>/gi) || [];
-  if (imgs.length === 0) return displayText;
+  if (!originalRawText || !/<(?:img|table)\b/i.test(originalRawText)) return displayText;
+  const tables = originalRawText.match(/<table\b[\s\S]*?<\/table>/gi) || [];
+  const textWithoutTables = originalRawText.replace(/<table\b[\s\S]*?<\/table>/gi, '');
+  const imgs = textWithoutTables.match(/<img\b[^>]*>/gi) || [];
   let result = displayText;
   imgs.forEach((imgTag, i) => {
     const token = `[Hình ảnh ${i + 1}]`;
     if (result.includes(token)) {
       result = result.replace(token, () => imgTag);
+    }
+  });
+  tables.forEach((tblTag, i) => {
+    const token = `[Bảng dữ liệu ${i + 1}]`;
+    if (result.includes(token)) {
+      result = result.replace(token, () => tblTag);
     }
   });
   return result;

@@ -193,16 +193,16 @@ const SYMBOL_PUA_MAP: Record<number, string> = {
 export function decodePdfMathSymbols(input: string): string {
   if (!input) return '';
 
-  // Nếu chuỗi có chứa thẻ <img ...>, tách riêng thẻ <img ...> để không quét qua dữ liệu base64
-  if (/<img\b/i.test(input)) {
-    const imgs: string[] = [];
-    const masked = input.replace(/<img\b[^>]*>/gi, (m) => {
-      const idx = imgs.length;
-      imgs.push(m);
-      return `\x00DEC_IMG_${idx}\x00`;
+  // Nếu chuỗi có chứa thẻ <img ...> hoặc <table ...>, tách riêng để không quét qua dữ liệu base64 / bảng HTML
+  if (/<(?:img|table)\b/i.test(input)) {
+    const preserved: string[] = [];
+    const masked = input.replace(/<table\b[\s\S]*?<\/table>|<img\b[^>]*>/gi, (m) => {
+      const idx = preserved.length;
+      preserved.push(m);
+      return `@@DEC@TOKEN@${idx}@@`;
     });
     const decoded = decodePdfMathSymbols(masked);
-    return decoded.replace(/\x00DEC_IMG_(\d+)\x00/g, (_, i) => imgs[Number(i)] || '');
+    return decoded.replace(/@@DEC@TOKEN@(\d+)@@/g, (_, i) => preserved[Number(i)] || '');
   }
 
   let out = '';
@@ -807,6 +807,14 @@ export async function preprocessDocxXmlForMathAndImages(zip: any): Promise<{
         return `<w:t xml:space="preserve"> ${cleanLatex} </w:t>`;
       }
 
+      // Nếu đối tượng OLE không trích xuất được chuỗi LaTeX (ví dụ đồ thị nhúng, hình vẽ hoặc công thức dạng ảnh),
+      // chuyển trực tiếp ảnh đại diện (<v:imagedata> / <a:blip>) sang <w:drawing><wp:inline> để Mammoth giữ nguyên 100% tại đúng vị trí
+      const oleImgMatch = match.match(/(?:<v:imagedata|<a:blip)\b[^>]*\br:(?:id|embed)=["']([^"']+)["']/i);
+      if (oleImgMatch && oleImgMatch[1]) {
+        const rId = oleImgMatch[1];
+        return `<w:drawing><wp:inline><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="${rId}"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing>`;
+      }
+
       return match;
     });
 
@@ -850,13 +858,17 @@ export async function preprocessDocxXmlForMathAndImages(zip: any): Promise<{
 
         const fallbackHasDirectImg = /(?:<v:imagedata|<pic:pic)\b/i.test(fallbackContent);
         const choiceHasDirectImg = /(?:<pic:pic|<a:blip|<v:imagedata)\b/i.test(choiceContent);
+        const choiceIsGroupOrShape = /<(?:wpg:wgp|wps:wsp)\b/i.test(choiceContent);
 
+        // Nếu <mc:Choice> là hình vẽ nhóm (<wpg:wgp>) hoặc shape (<wps:wsp>) mà <mc:Fallback> đã có ảnh gộp phẳng (<v:imagedata>),
+        // ưu tiên <mc:Fallback> để giữ nguyên 100% đồ thị/hình vẽ đã được Word kết xuất thành ảnh hoàn chỉnh
+        if (choiceIsGroupOrShape && fallbackHasDirectImg) {
+          return fallbackContent;
+        }
         // Nếu <mc:Choice> có <pic:pic> chuẩn của <w:drawing>, ưu tiên <mc:Choice> để ảnh giữ đúng vị trí inline
-        // (vì <w:pict> trong <mc:Fallback> bị Mammoth đẩy xuống cuối đoạn văn bằng .toExtra())
         if (/<pic:pic\b/i.test(choiceContent)) {
           return choiceContent;
         }
-        // Nếu <mc:Fallback> có <v:imagedata> (ví dụ hình nhóm <wpg:wgp> đã được Word gộp thành 1 ảnh phẳng trong Fallback)
         if (fallbackHasDirectImg) {
           return fallbackContent;
         }
@@ -877,7 +889,11 @@ export async function preprocessDocxXmlForMathAndImages(zip: any): Promise<{
     // Mammoth chỉ đọc đường dẫn trực tiếp: a:graphic > a:graphicData > pic:pic > pic:blipFill > a:blip
     documentXml = documentXml.replace(
       /<(wp:inline|wp:anchor)\b([^>]*)>([\s\S]*?)<\/\1>/gi,
-      (fullMatch: string, tagName: string, attrs: string, inner: string) => {
+      (fullMatch: string, _tagName: string, attrs: string, inner: string) => {
+        // Nếu có hộp văn bản <w:txbxContent> chứa bảng dữ liệu hoặc chữ bên trong shape thì giữ nguyên để không mất bảng/chữ
+        if (/<w:txbxContent\b/i.test(inner) && !/<a:blip\b/i.test(inner)) {
+          return fullMatch;
+        }
         // Nếu có <a:blip r:embed="rId..."/> nằm sâu bên trong <wpg:wgp> hoặc <wps:wsp>
         const blipMatches = Array.from(inner.matchAll(/<a:blip\b[^>]*\br:embed=["']([^"']+)["'][^>]*>/gi));
         if (blipMatches.length > 0 && (/<wpg:wgp\b/i.test(inner) || /<wps:wsp\b/i.test(inner) || !/<pic:pic\b/i.test(inner))) {
@@ -955,13 +971,17 @@ export function sanitizeMathContent(content: string): string {
     ''
   );
 
-  // Bảo vệ toàn bộ các thẻ <img ...> hợp lệ bằng placeholder để KHÔNG BẤT KỲ regex toán học nào chạm vào dữ liệu base64
-  const preservedImages: string[] = [];
-  preProcessed = preProcessed.replace(/<img\b[^>]*>/gi, (imgTag) => {
-    const idx = preservedImages.length;
-    preservedImages.push(imgTag);
-    return `\x00PRESERVED_IMG_${idx}\x00`;
+  // Bảo vệ toàn bộ các thẻ <img ...> và <table ...> hợp lệ bằng token nguyên tử KHÔNG CHỨA DẤU GẠCH DƯỚI (_)
+  // để KHÔNG BẤT KỲ regex chỉ số dưới / toán học nào chạm vào placeholder hoặc dữ liệu base64
+  const preservedBlocks: string[] = [];
+  preProcessed = preProcessed.replace(/<table\b[\s\S]*?<\/table>|<img\b[^>]*>/gi, (htmlBlock) => {
+    const idx = preservedBlocks.length;
+    preservedBlocks.push(htmlBlock);
+    return `@@PRESERVED@HTML@TOKEN@${idx}@@`;
   });
+
+  // Dọn dẹp các token lỗi cũ (nếu đề đã lưu trước đó bị dính $PRESERVED_IMG_0$)
+  preProcessed = preProcessed.replace(/\$?\bPRESERVED_IMG_\d+\b\$?/g, '');
 
   let processed = decodePdfMathSymbols(preProcessed);
 
@@ -984,8 +1004,8 @@ export function sanitizeMathContent(content: string): string {
   // 4. Tự động bọc các biểu thức toán học LaTeX phổ biến nếu giáo viên quên gõ dấu $
   processed = wrapUnenclosedLatex(processed);
 
-  // 5. Khôi phục nguyên vẹn 100% các thẻ <img ...> đã bảo vệ
-  processed = processed.replace(/\x00PRESERVED_IMG_(\d+)\x00/g, (_, idxStr) => preservedImages[Number(idxStr)] || '');
+  // 5. Khôi phục nguyên vẹn 100% các thẻ <img ...> và <table ...> đã bảo vệ
+  processed = processed.replace(/@@PRESERVED@HTML@TOKEN@(\d+)@@/g, (_, idxStr) => preservedBlocks[Number(idxStr)] || '');
 
   return processed;
 }
@@ -993,7 +1013,7 @@ export function sanitizeMathContent(content: string): string {
 function applyOutsideMath(text: string, fn: (plain: string) => string): string {
   if (!text) return '';
   const parts: string[] = [];
-  const mathOrTagRegex = /(\$\$[\s\S]*?\$\$|\$[^\$]+?\$|<\/?[a-zA-Z][^>]*>)/g;
+  const mathOrTagRegex = /(\$\$[\s\S]*?\$\$|\$[^\$]+?\$|<\/?[a-zA-Z][^>]*>|@@[A-Z@]+@TOKEN@\d+@@)/g;
   let lastIndex = 0;
   let match;
 

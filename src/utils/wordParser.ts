@@ -422,7 +422,8 @@ async function extractFiguresFromPdfPage(
     graphicsCtx.fillRect(0, 0, marginPx, maskH);
     graphicsCtx.fillRect(maskW - marginPx, 0, marginPx, maskH);
 
-    // Xóa khung nền / đường viền trang trí của các dòng tiêu đề PHẦN I, II, III và dòng mở đầu "Câu X." / phương án "A. B. C. D."
+    // Xóa khung nền trang trí của các dải tiêu đề PHẦN I, II, III và nhãn [IP] đầu dòng "Câu X."
+    // Tuyệt đối KHÔNG xóa ngang qua toàn dòng phương án hay dòng lời giải để tránh cắt đứt đồ thị / bảng dữ liệu nằm ngang hàng ở cột phải!
     for (const line of initialLines) {
       const lHeight = Math.max(line.height, 11);
       if (isSectionOrInstructionLineText(line.text)) {
@@ -430,20 +431,14 @@ async function extractFiguresFromPdfPage(
         const ry = Math.floor((pageHeight - (line.y + lHeight * 1.45)) * maskScale);
         const rh = Math.ceil(lHeight * 2.1 * maskScale);
         graphicsCtx.fillRect(0, Math.max(0, ry), maskW, rh);
-      } else if (isQuestionStartLineText(line.text) || isOptionOrSolutionLineText(line.text)) {
-        // Xóa vùng ngang của chữ trên dòng Câu X. (ví dụ khung [IP]) và dòng phương án A. B. C. D. (ví dụ gạch chân <u>A.</u>, phân số inline)
-        const rx = Math.max(0, Math.floor((line.minX - 4) * maskScale));
-        const rw = Math.ceil((line.maxX - line.minX + 8) * maskScale);
-        const ry = Math.max(0, Math.floor((pageHeight - (line.y + lHeight * 1.25)) * maskScale));
-        const rh = Math.ceil(lHeight * 1.65 * maskScale);
+      } else if (isQuestionStartLineText(line.text) && /\[IP\]/i.test(line.text)) {
+        // Chỉ xóa khung viền nhỏ của nhãn [IP] ở ngay đầu dòng "Câu X. [IP]" (tối đa 75pt đầu dòng)
+        const rx = Math.max(0, Math.floor((line.minX - 2) * maskScale));
+        const rw = Math.ceil(Math.min(75, line.maxX - line.minX + 4) * maskScale);
+        const ry = Math.max(0, Math.floor((pageHeight - (line.y + lHeight * 1.15)) * maskScale));
+        const rh = Math.ceil(lHeight * 1.45 * maskScale);
         graphicsCtx.fillRect(rx, ry, rw, rh);
       }
-    }
-
-    // Kẻ vạch phân cách mỏng tại vị trí bắt đầu mỗi câu hỏi ("Câu 1.", "Câu 2."...) để hình của 2 câu liên tiếp không bao giờ gộp vào nhau
-    for (const qY of questionBreakYs) {
-      const py = Math.floor((pageHeight - (qY + 9)) * maskScale);
-      graphicsCtx.fillRect(0, Math.max(0, py - 1), maskW, 3);
     }
 
     // 4. Quét lưới ô 2x2 trên graphicsCanvas với bán kính liên thông chặt (1 ô ~ 2.6pt)
@@ -554,24 +549,28 @@ async function extractFiguresFromPdfPage(
           const vertOverlap = Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY);
           const minH = Math.min(a.maxY - a.minY, b.maxY - b.minY);
 
-          const topY = Math.max(a.maxY, b.maxY);
-          const botY = Math.min(a.minY, b.minY);
-          const crossesQuestion = questionBreakYs.some(qY => qY > botY + 4 && qY < topY - 4);
+          const centerAY = (a.minY + a.maxY) / 2;
+          const centerBY = (b.minY + b.maxY) / 2;
+          const minCenterY = Math.min(centerAY, centerBY);
+          const maxCenterY = Math.max(centerAY, centerBY);
+          const crossesQuestion = questionBreakYs.some(qY => qY > minCenterY + 2 && qY < maxCenterY - 2);
 
-          // Kiểm tra có dòng câu hỏi / phương án nào cắt ngang giữa 2 hộp không
+          // Kiểm tra có dòng tiêu đề phần hoặc dòng mở đầu câu hỏi cắt ngang hoàn toàn giữa 2 hộp không
           const crossesProtectedLine = initialLines.some(l => {
-            if (!isSectionOrInstructionLineText(l.text) && !isQuestionStartLineText(l.text) && !isOptionOrSolutionLineText(l.text)) {
+            if (!isSectionOrInstructionLineText(l.text) && !isQuestionStartLineText(l.text)) {
               return false;
             }
-            return l.y > botY + 3 && l.y < topY - 3;
+            return l.y > minCenterY + 3 && l.y < maxCenterY - 3;
           });
 
-          const isClosePartsOfSameDiagram = horizGap <= 14 && vertGap <= 6;
-          const isSideBySideSubfigures = vertOverlap >= minH * 0.55 && horizGap <= 45;
+          const isClosePartsOfSameDiagram = horizGap <= 16 && vertGap <= 8;
+          const isSideBySideSubfigures = vertOverlap >= minH * 0.50 && horizGap <= 48;
 
           // Không gộp 2 hình ngang hàng nếu giữa chúng (hoặc ngay phía trên hình bên phải) có nhãn phương án B., C., D. hoặc b), c), d) riêng biệt
           const leftBoxMaxX = Math.min(a.maxX, b.maxX);
           const rightBoxMaxX = Math.max(a.maxX, b.maxX);
+          const topY = Math.max(a.maxY, b.maxY);
+          const botY = Math.min(a.minY, b.minY);
           const hasOptionMarkerBetween = rawItems.some(it => {
             const s = it.str.trim();
             if (!/(?:^|\s)(?:[B-D][\.\:\)]|[b-d]\))(?:\s|$)/.test(s)) return false;
@@ -610,6 +609,29 @@ async function extractFiguresFromPdfPage(
 
     const extractedFigures: PdfExtractedFigure[] = [];
 
+    // Hàm tính độ chồng lấp ngang thực sự của phần văn bản ngoại vi (không tính các nhãn trục/ô bảng nằm tách biệt bên trong hình ở cột phải)
+    const getExternalProseOverlap = (l: (typeof initialLines)[number], bMinX: number, bMaxX: number): number => {
+      // Nếu dòng chữ nằm gọn hoàn toàn theo chiều ngang bên trong phạm vi hình/bảng (ví dụ dòng tiêu đề bảng hoặc nhãn trục đồ thị)
+      // thì đó là nội dung BÊN TRONG hình/bảng, không phải dòng văn bản bên ngoài!
+      if (l.minX >= bMinX - 14 && l.maxX <= bMaxX + 14 && !isSectionOrInstructionLineText(l.text) && !isQuestionStartLineText(l.text)) {
+        return 0;
+      }
+      // Tách các cụm item trên dòng nếu có khoảng trống ngang > 28pt (ngăn cách giữa cột chữ bên trái và đồ thị bên phải)
+      const sorted = [...l.items].sort((a, b) => a.x - b.x);
+      if (sorted.length === 0) return 0;
+      let segMinX = sorted[0].x;
+      let segMaxX = sorted[0].x + sorted[0].width;
+      for (let k = 1; k < sorted.length; k++) {
+        const it = sorted[k];
+        if (it.x - segMaxX > 28 && segMaxX <= bMinX + 12) {
+          // Dừng lại trước khoảng trống sang cột đồ thị bên phải
+          break;
+        }
+        segMaxX = Math.max(segMaxX, it.x + it.width);
+      }
+      return Math.max(0, Math.min(segMaxX, bMaxX) - Math.max(segMinX, bMinX));
+    };
+
     for (const rawBox of mergedBoxes) {
       let boxMinX = rawBox.minX;
       let boxMaxX = rawBox.maxX;
@@ -617,10 +639,9 @@ async function extractFiguresFromPdfPage(
       let boxMaxY = rawBox.maxY;
 
       // 6.1. Cắt gọt nghiêm ngặt: Đảm bảo khung hình KHÔNG BAO GIỜ trùm lên dòng tiêu đề PHẦN, dòng câu hỏi "Câu X." hoặc dòng phương án "A. B. C. D." / "a) b) c) d)"
-      // Lưu ý: Chỉ cắt khi dòng chữ thực sự nằm đè theo chiều ngang lên khung hình (tránh cắt nhầm hình nằm ở cột bên phải ngang hàng với chữ lời giải / đáp án bên trái!)
       for (const l of initialLines) {
         const boxW = Math.max(1, boxMaxX - boxMinX);
-        const horizOverlap = Math.min(l.maxX, boxMaxX) - Math.max(l.minX, boxMinX);
+        const horizOverlap = getExternalProseOverlap(l, boxMinX, boxMaxX);
         if (horizOverlap <= Math.max(20, boxW * 0.30)) continue;
         const lh = Math.max(l.height, 11);
 
@@ -639,19 +660,8 @@ async function extractFiguresFromPdfPage(
       // 6.2. Mở rộng nhẹ để bao trọn các nhãn trục ngắn (như O, x, y, t (s), u (V), Hình 1...) nằm sát rìa trục đồ thị
       for (const item of rawItems) {
         const str = item.str.trim();
-        if (!str || str.length > 14) continue;
+        if (!str || str.length > 16) continue;
         if (/^(?:Câu|Bài|PHẦN|A\.|B\.|C\.|D\.|a\)|b\)|c\)|d\))/i.test(str)) continue;
-
-        // Kiểm tra xem item này có thuộc về một dòng câu dẫn dài hoặc dòng phương án không
-        const belongsToProtectedLine = initialLines.some(
-          l =>
-            l.items.includes(item) &&
-            (isSectionOrInstructionLineText(l.text) ||
-              isQuestionStartLineText(l.text) ||
-              isOptionOrSolutionLineText(l.text) ||
-              l.text.length > 42)
-        );
-        if (belongsToProtectedLine) continue;
 
         const ix1 = item.x;
         const ix2 = item.x + item.width;
@@ -660,13 +670,25 @@ async function extractFiguresFromPdfPage(
 
         const hDist = Math.max(0, Math.max(ix1, boxMinX) - Math.min(ix2, boxMaxX));
         const vDist = Math.max(0, Math.max(iy1, boxMinY) - Math.min(iy2, boxMaxY));
+        if (hDist > 16 || vDist > 12) continue;
 
-        if (hDist <= 14 && vDist <= 10) {
-          boxMinX = Math.min(boxMinX, ix1);
-          boxMaxX = Math.max(boxMaxX, ix2);
-          boxMinY = Math.min(boxMinY, iy1);
-          boxMaxY = Math.max(boxMaxY, iy2);
-        }
+        // Kiểm tra xem item này có dính liền (khoảng cách ngang < 24pt) với một dòng văn bản dài bên ngoài hình không
+        const attachedToExternalProse = initialLines.some(l => {
+          if (!l.items.includes(item)) return false;
+          if (isSectionOrInstructionLineText(l.text) || isQuestionStartLineText(l.text)) return true;
+          return l.items.some(
+            other =>
+              other !== item &&
+              (other.x < boxMinX - 18 || other.x + other.width > boxMaxX + 18) &&
+              Math.max(0, Math.max(other.x, ix1) - Math.min(other.x + other.width, ix2)) < 24
+          );
+        });
+        if (attachedToExternalProse) continue;
+
+        boxMinX = Math.min(boxMinX, ix1);
+        boxMaxX = Math.max(boxMaxX, ix2);
+        boxMinY = Math.min(boxMinY, iy1);
+        boxMaxY = Math.max(boxMaxY, iy2);
       }
 
       // 6.3. Thêm lề trắng nhỏ 3.5pt quanh đồ thị/bảng nhưng chặn tuyệt đối không cho lấn vào dòng văn bản bên trên hoặc bên dưới
@@ -678,21 +700,17 @@ async function extractFiguresFromPdfPage(
 
       for (const l of initialLines) {
         const cropW = Math.max(1, cropMaxX - cropMinX);
-        const horizOverlap = Math.min(l.maxX, cropMaxX) - Math.max(l.minX, cropMinX);
+        const horizOverlap = getExternalProseOverlap(l, cropMinX, cropMaxX);
         if (horizOverlap <= Math.max(20, cropW * 0.30)) continue;
         const lh = Math.max(l.height, 11);
 
-        // Nếu dòng văn bản nằm phía trên khung đồ thị/bảng (hoặc là dòng Câu X.)
-        if (l.y >= boxMaxY - 18) {
-          if (l.y > (boxMinY + boxMaxY) / 2) {
-            cropMaxY = Math.min(cropMaxY, l.y - lh * 0.30);
-          }
+        // Nếu dòng văn bản bên ngoài nằm phía trên khung đồ thị/bảng
+        if (l.y >= boxMaxY - 14 && l.y > (boxMinY + boxMaxY) / 2) {
+          cropMaxY = Math.min(cropMaxY, l.y - lh * 0.30);
         }
-        // Nếu dòng văn bản nằm phía dưới khung đồ thị/bảng (hoặc là dòng phương án A, B, C, D)
-        if (l.y <= boxMinY + 18) {
-          if (l.y < (boxMinY + boxMaxY) / 2) {
-            cropMinY = Math.max(cropMinY, l.y + lh * 1.02);
-          }
+        // Nếu dòng văn bản bên ngoài nằm phía dưới khung đồ thị/bảng
+        if (l.y <= boxMinY + 14 && l.y < (boxMinY + boxMaxY) / 2) {
+          cropMinY = Math.max(cropMinY, l.y + lh * 1.02);
         }
       }
 
@@ -1279,6 +1297,9 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
 
     // Bước 2: Lọc bỏ chân tiêu đề / header / footer và trích xuất hình ảnh / đồ thị / bảng dữ liệu trên từng trang
     const pagesText: string[] = [];
+    let inTrailingSolutionSection = false;
+    const trailingSectionHeadingRegex =
+      /(?:^|\s)(?:-+\s*H\s*Ế\s*T\s*-+|BẢNG\s*ĐÁP\s*ÁN|PHẦN\s*ĐÁP\s*ÁN|ĐÁP\s*ÁN\s*[-–—:\/]?\s*(?:VÀ\s*)?(?:HƯỚNG\s*DẪN|LỜI\s*GIẢI)|HƯỚNG\s*DẪN\s*GIẢI(?:\s*CHI\s*TIẾT)?|LỜI\s*GIẢI\s*CHI\s*TIẾT)\b/i;
 
     for (const pData of pageDataList) {
       const { pageIndex, page, pageWidth, pageHeight, rawItems, initialLines } = pData;
@@ -1290,7 +1311,7 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
       const questionBreakYs: number[] = [];
 
       for (const l of initialLines) {
-        if (isQuestionStartLineText(l.text) || isSectionOrInstructionLineText(l.text) || isSolutionLineText(l.text)) {
+        if (isQuestionStartLineText(l.text) || isSectionOrInstructionLineText(l.text)) {
           questionBreakYs.push(l.y);
         }
       }
@@ -1331,7 +1352,7 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
       );
 
       // Tập hợp các item thuộc về dòng tiêu đề phần, dòng mở đầu câu hỏi ("Câu X.") hoặc dòng phương án ("A. B. C. D." / "a) b) c) d)")
-      // Những item này được BẢO VỆ 100%, không bao giờ bị xóa!
+      // Lưu ý: Không bảo vệ các nhãn trục / chữ nằm bên trong hình vẽ ở cột phải chỉ vì trùng tung độ y với dòng phương án bên trái!
       const protectedItems = new Set<PdfPositionedItem>();
       for (const l of initialLines) {
         if (
@@ -1339,7 +1360,20 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
           isQuestionStartLineText(l.text) ||
           isOptionOrSolutionLineText(l.text)
         ) {
-          for (const it of l.items) {
+          const sortedLineItems = [...l.items].sort((a, b) => a.x - b.x);
+          let prevMaxX = sortedLineItems.length > 0 ? sortedLineItems[0].x + sortedLineItems[0].width : 0;
+          for (const it of sortedLineItems) {
+            const cx = it.x + it.width / 2;
+            const cy = it.y + it.height / 3;
+            const insideFig = pageFigures.some(
+              fig => cx >= fig.minX - 1 && cx <= fig.maxX + 1 && cy >= fig.minY - 1 && cy <= fig.maxY + 1
+            );
+            const isSeparatedRightColumnItem = it.x - prevMaxX > 28;
+            const isExplicitMarker = /^(?:Câu|Bài|PHẦN|[A-D][\.\:\)]|[a-d]\)|Lời\s*giải|Hướng\s*dẫn)/i.test(it.str.trim());
+            if (insideFig && isSeparatedRightColumnItem && !isExplicitMarker) {
+              continue;
+            }
+            prevMaxX = Math.max(prevMaxX, it.x + it.width);
             protectedItems.add(it);
             if (it.sourceItems) {
               for (const srcIt of it.sourceItems) {
@@ -1369,7 +1403,9 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
       const reconstructedLines = groupItemsIntoLines(filteredItems);
 
       // Lọc bỏ triệt để các dòng chân tiêu đề (page footers, running headers, tiêu đề phụ)
-      const validLines: { y: number; text: string }[] = [];
+      const validLines: { y: number; text: string; minX: number; maxX: number }[] = [];
+      let pageTrailingSectionStartY: number | null = inTrailingSolutionSection ? pageHeight + 100 : null;
+
       for (const l of reconstructedLines) {
         if (isHeaderOrFooterLine(l.text, l.y, pageHeight, pageIndex, pdf.numPages, repeatedSignatures)) {
           continue;
@@ -1379,20 +1415,27 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
         if (isHeaderOrFooterLine(cleanedText, l.y, pageHeight, pageIndex, pdf.numPages, repeatedSignatures)) {
           continue;
         }
-        validLines.push({ y: l.y, text: cleanedText });
+        if (pageTrailingSectionStartY === null && trailingSectionHeadingRegex.test(cleanedText)) {
+          pageTrailingSectionStartY = l.y;
+          inTrailingSolutionSection = true;
+        }
+        validLines.push({ y: l.y, text: cleanedText, minX: l.minX, maxX: l.maxX });
       }
 
-      // Chèn thẻ <img class="pdf-figure-img" src="..." /> vào ĐÚNG VỊ TRÍ ĐỊNH DẠNG của nó trong câu hỏi
+      // Chèn thẻ <img class="pdf-figure-img" src="..." /> vào ĐÚNG VỊ TRÍ ĐỊNH DẠNG của nó trong câu hỏi / đáp án / lời giải
       const combinedEntries: { y: number; text: string }[] = validLines.map(l => ({ y: l.y, text: l.text }));
 
       for (const fig of pageFigures) {
         const figCenterX = (fig.minX + fig.maxX) / 2;
+        const isFigInTrailingSolutionSection =
+          pageTrailingSectionStartY !== null && fig.centerY <= pageTrailingSectionStartY + 10;
+
         // Tìm dòng 'Câu X.' mở đầu câu hỏi sở hữu hình này (nằm phía trên hoặc ngang đỉnh hình)
         const questionLinesAbove = validLines.filter(
-          l => isQuestionStartLineText(l.text) && l.y >= fig.centerY - 14
+          l => isQuestionStartLineText(l.text) && l.y >= fig.centerY - 18
         );
         const breakLinesBelow = validLines.filter(
-          l => (isQuestionStartLineText(l.text) || isSectionOrInstructionLineText(l.text)) && l.y < fig.centerY - 14
+          l => (isQuestionStartLineText(l.text) || isSectionOrInstructionLineText(l.text)) && l.y < fig.centerY - 18
         );
 
         let insertY = fig.centerY;
@@ -1402,88 +1445,110 @@ export async function parsePdfFileToText(arrayBuffer: ArrayBuffer): Promise<stri
         if (questionLinesAbove.length > 0) {
           const ownerQuestionLine = questionLinesAbove[questionLinesAbove.length - 1];
 
-          // 1. Kiểm tra dòng 'Lời giải:' / 'Hướng dẫn giải:' thuộc câu hỏi này
-          const solLinesInQuestion = validLines.filter(
-            l =>
-              l.y < ownerQuestionLine.y &&
-              l.y > nextBreakY &&
-              isSolutionLineText(l.text)
-          );
-          const highestSolY = solLinesInQuestion.length > 0 ? Math.max(...solLinesInQuestion.map(l => l.y)) : null;
-
-          // 2. Tìm các dòng phương án A. B. C. D. / a) b) c) d) thuộc câu hỏi này (nằm trên Lời giải nếu có)
-          const optionLinesInQuestion = validLines.filter(
-            l =>
-              l.y < ownerQuestionLine.y &&
-              l.y > (highestSolY !== null ? highestSolY : nextBreakY) &&
-              isPureOptionLineText(l.text)
-          );
-          const firstOptionY =
-            optionLinesInQuestion.length > 0
-              ? Math.max(...optionLinesInQuestion.map(l => l.y))
-              : null;
-
-          if (highestSolY !== null && (fig.centerY <= highestSolY + 18 || fig.minY < highestSolY - 4)) {
-            // Hình ảnh / Đồ thị / Bảng dữ liệu nằm TRONG phần Lời giải (kể cả hình nằm ngang hàng cột phải cạnh chữ Lời giải):
-            // Luôn đặt insertY ngay dưới dòng mở đầu 'Lời giải:' để hình được giữ nguyên 100% trong Lời giải
-            insertY = Math.min(highestSolY - 0.5, Math.max(fig.centerY, nextBreakY + 0.5));
-          } else if (firstOptionY !== null) {
-            // Phân biệt hình của thân câu hỏi (nằm trên dòng phương án đầu tiên, hoặc hình cột phải có đỉnh cao hơn phương án A)
-            // với hình nằm TRONG các phương án A, B, C, D / a), b), c), d)
-            const isStemFigure =
-              fig.centerY > firstOptionY + 8 ||
-              fig.minY >= firstOptionY - 4 ||
-              (fig.maxY > firstOptionY + 14 && fig.minX > pageWidth * 0.44);
-
-            if (isStemFigure) {
-              insertY = Math.min(ownerQuestionLine.y - 0.5, Math.max(fig.centerY, firstOptionY + 0.5));
-            } else {
-              // Hình nằm TRONG vùng phương án lựa chọn (A, B, C, D hoặc a, b, c, d)
-              const optLinesAboveFig = optionLinesInQuestion.filter(l => l.y >= fig.centerY - 14);
-              const ownerOptLine =
-                optLinesAboveFig.length > 0
-                  ? optLinesAboveFig[optLinesAboveFig.length - 1]
-                  : optionLinesInQuestion[0];
-
-              // Kiểm tra nếu dòng phương án chứa nhiều nhãn (VD: A.   B.   C.   D. trên cùng 1 hàng ngang)
-              if (ownerOptLine) {
-                const lineMarkers: { letter: string; x: number }[] = [];
-                const lineItems = rawItems
-                  .filter(it => Math.abs(it.y - ownerOptLine.y) <= 10)
-                  .sort((a, b) => a.x - b.x);
-
-                for (const it of lineItems) {
-                  const regex = /(?:^|\s)([A-D])[\.\:\)]|(?:^|\s)([a-d])\)/g;
-                  let m: RegExpExecArray | null;
-                  while ((m = regex.exec(it.str)) !== null) {
-                    const ltr = m[1] ? m[1].toUpperCase() : m[2].toLowerCase();
-                    const approxX = it.x + (m.index / Math.max(1, it.str.length)) * it.width;
-                    if (!lineMarkers.some(existing => existing.letter === ltr)) {
-                      lineMarkers.push({ letter: ltr, x: approxX });
-                    }
-                  }
-                }
-
-                if (lineMarkers.length >= 2) {
-                  lineMarkers.sort((a, b) => a.x - b.x);
-                  let bestMarker = lineMarkers[0];
-                  let bestDist = Math.abs(figCenterX - bestMarker.x);
-                  for (const mk of lineMarkers) {
-                    // Ưu tiên nhãn phương án nằm bên trái hoặc thẳng hàng với tâm hình
-                    const dist = figCenterX >= mk.x - 25 ? figCenterX - mk.x : Math.abs(figCenterX - mk.x) + 40;
-                    if (dist < bestDist) {
-                      bestDist = dist;
-                      bestMarker = mk;
-                    }
-                  }
-                  optionLetterAttr = ` data-option-letter="${bestMarker.letter}"`;
-                }
-
-                insertY = Math.min(ownerOptLine.y - 0.3, Math.max(fig.centerY, (highestSolY ?? nextBreakY) + 0.5));
-              }
-            }
-          } else {
+          if (isFigInTrailingSolutionSection) {
+            // Hình nằm trong phần BẢNG ĐÁP ÁN / HƯỚNG DẪN GIẢI CHI TIẾT ở cuối đề:
+            // Đặt ngay trong khối lời giải của câu hỏi đó và tuyệt đối không gắn nhãn phương án data-option-letter
             insertY = Math.min(ownerQuestionLine.y - 0.5, Math.max(fig.centerY, nextBreakY + 0.5));
+          } else {
+            // 1. Kiểm tra dòng 'Lời giải:' / 'Hướng dẫn giải:' thuộc câu hỏi này
+            const solLinesInQuestion = validLines.filter(
+              l =>
+                l.y < ownerQuestionLine.y &&
+                l.y > nextBreakY &&
+                isSolutionLineText(l.text)
+            );
+            const highestSolY = solLinesInQuestion.length > 0 ? Math.max(...solLinesInQuestion.map(l => l.y)) : null;
+
+            // 2. Tìm các dòng phương án A. B. C. D. / a) b) c) d) thuộc câu hỏi này (nằm trên Lời giải nếu có)
+            const optionLinesInQuestion = validLines.filter(
+              l =>
+                l.y < ownerQuestionLine.y &&
+                l.y > (highestSolY !== null ? highestSolY : nextBreakY) &&
+                isPureOptionLineText(l.text)
+            );
+            const firstOptionY =
+              optionLinesInQuestion.length > 0
+                ? Math.max(...optionLinesInQuestion.map(l => l.y))
+                : null;
+
+            if (highestSolY !== null && (fig.centerY <= highestSolY + 18 || fig.minY < highestSolY - 4)) {
+              // Hình ảnh / Đồ thị / Bảng dữ liệu nằm TRONG phần Lời giải (kể cả hình nằm ngang hàng cột phải cạnh chữ Lời giải):
+              // Luôn đặt insertY ngay dưới dòng mở đầu 'Lời giải:' để hình được giữ nguyên 100% trong Lời giải
+              insertY = Math.min(highestSolY - 0.5, Math.max(fig.centerY, nextBreakY + 0.5));
+            } else if (firstOptionY !== null) {
+              // Kiểm tra xem có nhãn phương án B., C., D. / b), c), d) nào nằm trực tiếp trong dải ngang của hình không
+              const hasOptionMarkerAlignedWithFig = rawItems.some(it => {
+                const s = it.str.trim();
+                if (!/(?:^|\s)(?:[A-D][\.\:\)]|[a-d]\))(?:\s|$)/.test(s)) return false;
+                return (
+                  it.y <= ownerQuestionLine.y + 4 &&
+                  it.y >= (highestSolY !== null ? highestSolY : nextBreakY) &&
+                  it.x >= fig.minX - 24 &&
+                  it.x <= fig.maxX + 12
+                );
+              });
+
+              // Hình nằm ở cột bên phải ngang hàng với thân câu hỏi và các phương án bên trái -> thuộc về Thân câu hỏi (Stem Figure)
+              const isRightColumnQuestionFigure =
+                fig.minX > pageWidth * 0.40 &&
+                fig.maxY >= firstOptionY - 22 &&
+                !hasOptionMarkerAlignedWithFig;
+
+              const isStemFigure =
+                fig.centerY > firstOptionY + 8 ||
+                fig.minY >= firstOptionY - 4 ||
+                isRightColumnQuestionFigure;
+
+              if (isStemFigure) {
+                insertY = Math.min(ownerQuestionLine.y - 0.5, Math.max(fig.centerY, firstOptionY + 0.5));
+              } else {
+                // Hình nằm TRONG vùng phương án lựa chọn (A, B, C, D hoặc a, b, c, d)
+                const optLinesAboveFig = optionLinesInQuestion.filter(l => l.y >= fig.centerY - 14);
+                const ownerOptLine =
+                  optLinesAboveFig.length > 0
+                    ? optLinesAboveFig[optLinesAboveFig.length - 1]
+                    : optionLinesInQuestion[0];
+
+                // Kiểm tra nếu dòng phương án chứa nhiều nhãn (VD: A.   B.   C.   D. trên cùng 1 hàng ngang)
+                if (ownerOptLine) {
+                  const lineMarkers: { letter: string; x: number }[] = [];
+                  const lineItems = rawItems
+                    .filter(it => Math.abs(it.y - ownerOptLine.y) <= 10)
+                    .sort((a, b) => a.x - b.x);
+
+                  for (const it of lineItems) {
+                    const regex = /(?:^|\s)([A-D])[\.\:\)]|(?:^|\s)([a-d])\)/g;
+                    let m: RegExpExecArray | null;
+                    while ((m = regex.exec(it.str)) !== null) {
+                      const ltr = m[1] ? m[1].toUpperCase() : m[2].toLowerCase();
+                      const approxX = it.x + (m.index / Math.max(1, it.str.length)) * it.width;
+                      if (!lineMarkers.some(existing => existing.letter === ltr)) {
+                        lineMarkers.push({ letter: ltr, x: approxX });
+                      }
+                    }
+                  }
+
+                  if (lineMarkers.length >= 2) {
+                    lineMarkers.sort((a, b) => a.x - b.x);
+                    let bestMarker = lineMarkers[0];
+                    let bestDist = Math.abs(figCenterX - bestMarker.x);
+                    for (const mk of lineMarkers) {
+                      // Ưu tiên nhãn phương án nằm bên trái hoặc thẳng hàng với tâm hình
+                      const dist = figCenterX >= mk.x - 25 ? figCenterX - mk.x : Math.abs(figCenterX - mk.x) + 40;
+                      if (dist < bestDist) {
+                        bestDist = dist;
+                        bestMarker = mk;
+                      }
+                    }
+                    optionLetterAttr = ` data-option-letter="${bestMarker.letter}"`;
+                  }
+
+                  insertY = Math.min(ownerOptLine.y - 0.3, Math.max(fig.centerY, (highestSolY ?? nextBreakY) + 0.5));
+                }
+              }
+            } else {
+              insertY = Math.min(ownerQuestionLine.y - 0.5, Math.max(fig.centerY, nextBreakY + 0.5));
+            }
           }
         } else {
           // Trường hợp hình nằm ở đầu trang tiếp theo (thuộc phần Lời giải hoặc phương án của câu cuối trang trước)
