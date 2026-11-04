@@ -44,7 +44,7 @@ export interface TeacherBannerConfig {
 }
 
 const STORAGE_KEY = 'teacher_dashboard_banner_v1';
-const CURRENT_FIT_VERSION = 2;
+const CURRENT_FIT_VERSION = 3;
 
 // 3 mẫu Banner Giáo dục / Luyện thi Vật Lí sắc nét dựng sẵn bằng SVG Data URI
 export const PRESET_BANNERS: Array<{
@@ -60,7 +60,7 @@ export const PRESET_BANNERS: Array<{
     caption: '',
     previewGradient: 'from-teal-700 via-teal-600 to-indigo-700',
     svgDataUrl: `data:image/svg+xml;utf8,${encodeURIComponent(`
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="100%" height="100%" preserveAspectRatio="none">
         <defs>
           <linearGradient id="bg1" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stop-color="#0f766e"/>
@@ -122,7 +122,7 @@ export const PRESET_BANNERS: Array<{
     caption: '',
     previewGradient: 'from-indigo-800 via-blue-700 to-teal-600',
     svgDataUrl: `data:image/svg+xml;utf8,${encodeURIComponent(`
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="100%" height="100%" preserveAspectRatio="none">
         <defs>
           <linearGradient id="bg2" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stop-color="#1e1b4b"/>
@@ -166,7 +166,7 @@ export const PRESET_BANNERS: Array<{
     caption: '',
     previewGradient: 'from-emerald-800 via-teal-700 to-cyan-800',
     svgDataUrl: `data:image/svg+xml;utf8,${encodeURIComponent(`
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="100%" height="100%" preserveAspectRatio="none">
         <defs>
           <linearGradient id="bg3" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stop-color="#064e3b"/>
@@ -237,6 +237,21 @@ export function normalizeBannerConfig(rawConfig?: Partial<TeacherBannerConfig> |
       merged.bannerCaption = '';
     }
     merged.fitVersion = CURRENT_FIT_VERSION;
+  }
+
+  // Đảm bảo các mẫu SVG dựng sẵn luôn co giãn 100% khung không bị viền trống trên/dưới
+  if (
+    merged.imageUrl &&
+    merged.imageUrl.startsWith('data:image/svg+xml') &&
+    !merged.imageUrl.includes('preserveAspectRatio')
+  ) {
+    if (merged.imageUrl.includes('B%E1%BB%A8T%20PH%C3%81%20%C4%90I%E1%BB%82M%20S%E1%BB%90')) {
+      merged.imageUrl = PRESET_BANNERS[1].svgDataUrl;
+    } else if (merged.imageUrl.includes('PH%C3%92NG%20THI')) {
+      merged.imageUrl = PRESET_BANNERS[2].svgDataUrl;
+    } else {
+      merged.imageUrl = PRESET_BANNERS[0].svgDataUrl;
+    }
   }
 
   return merged;
@@ -495,8 +510,8 @@ export default function TeacherBannerSection({ teacherName, onNavigate }: Teache
             </div>
           )}
 
-          {/* Thanh công cụ nổi góc trên bên phải (Hiện khi di chuột hoặc trên màn hình cảm ứng) */}
-          <div className="absolute top-3 right-3 z-20 flex flex-wrap items-center gap-1.5 opacity-95 md:opacity-0 group-hover:opacity-100 transition-opacity">
+          {/* Thanh công cụ nổi góc trên bên phải (CHỈ hiện khi đưa chuột vào Banner) */}
+          <div className="absolute top-3 right-3 z-20 flex flex-wrap items-center gap-1.5 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity duration-200">
             <button
               type="button"
               onClick={() =>
@@ -505,7 +520,7 @@ export default function TeacherBannerSection({ teacherName, onNavigate }: Teache
                   'Đã chuyển sang chế độ Khung bên phải (Giữ lời chào bên trái)'
                 )
               }
-              className="px-2.5 py-1.5 rounded-xl bg-slate-900/75 hover:bg-slate-900 text-white text-[11px] font-bold backdrop-blur-md border border-white/25 shadow-md flex items-center gap-1 cursor-pointer"
+              className="px-2.5 py-1.5 rounded-xl bg-slate-900/80 hover:bg-slate-900 text-white text-[11px] font-bold backdrop-blur-md border border-white/25 shadow-md flex items-center gap-1 cursor-pointer"
               title="Hiện lời chào bên trái và khung ảnh Banner bên phải"
             >
               <Columns className="w-3.5 h-3.5 text-amber-300" />
@@ -527,31 +542,6 @@ export default function TeacherBannerSection({ teacherName, onNavigate }: Teache
             >
               <Settings2 className="w-3.5 h-3.5 text-amber-300" />
               <span>Tùy chỉnh</span>
-            </button>
-          </div>
-
-          {/* Các nút điều hướng nhanh gọn ở góc trái dưới (Hiện nhẹ khi di chuột để không che ảnh Banner) */}
-          <div className="absolute bottom-3 left-4 z-20 flex flex-wrap items-center gap-2 opacity-95 md:opacity-0 group-hover:opacity-100 transition-opacity">
-            <button
-              type="button"
-              onClick={() => onNavigate('classes')}
-              className="px-3 py-1.5 bg-white/95 hover:bg-white text-teal-900 font-bold rounded-xl text-xs shadow-md flex items-center gap-1.5 cursor-pointer"
-            >
-              <GraduationCap className="w-3.5 h-3.5 text-teal-600" /> Quản lý Lớp
-            </button>
-            <button
-              type="button"
-              onClick={() => onNavigate('exams')}
-              className="px-3 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white font-bold rounded-xl text-xs border border-white/25 backdrop-blur-md shadow-md flex items-center gap-1.5 cursor-pointer"
-            >
-              <BookOpen className="w-3.5 h-3.5 text-teal-300" /> Kho Đề Thi
-            </button>
-            <button
-              type="button"
-              onClick={() => onNavigate('assign')}
-              className="px-3 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white font-bold rounded-xl text-xs border border-white/25 backdrop-blur-md shadow-md flex items-center gap-1.5 cursor-pointer"
-            >
-              <Send className="w-3.5 h-3.5 text-teal-300" /> Giao Bài Online
             </button>
           </div>
         </div>
@@ -677,8 +667,8 @@ export default function TeacherBannerSection({ teacherName, onNavigate }: Teache
                       className="w-full h-full block select-none"
                     />
 
-                    {/* Thanh công cụ nổi trên góc phải của khung Banner */}
-                    <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 opacity-95 md:opacity-0 group-hover:opacity-100 transition-opacity">
+                    {/* Thanh công cụ nổi trên góc phải của khung Banner (Chỉ hiện khi đưa chuột vào) */}
+                    <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity duration-200">
                       <button
                         type="button"
                         onClick={() => quickFileInputRef.current?.click()}

@@ -589,42 +589,6 @@ export default function StudentDashboard() {
                   </span>
                 </div>
               )}
-
-              {/* Lời chào nhỏ gọn góc trên bên trái (Hiện nhẹ khi di chuột giống cổng Giáo viên) */}
-              <div className="absolute top-3 left-4 z-20 flex flex-wrap items-center gap-2 opacity-95 md:opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-slate-900/75 text-white backdrop-blur-md border border-white/25 shadow-md">
-                  <Sparkles className="w-3.5 h-3.5 text-teal-300" />
-                  <span>Xin chào, {cleanStudentName || studentName}!</span>
-                </span>
-              </div>
-
-              {/* Các nút điều hướng nhanh gọn ở góc trái dưới (Hiện nhẹ khi di chuột để không che ảnh Banner) */}
-              <div className="absolute bottom-3 left-4 z-20 flex flex-wrap items-center gap-2 opacity-95 md:opacity-0 group-hover:opacity-100 transition-opacity">
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('assignments')}
-                  className="px-3 py-1.5 bg-white/95 hover:bg-white text-teal-900 font-bold rounded-xl text-xs shadow-md flex items-center gap-1.5 cursor-pointer"
-                >
-                  <FileText className="w-3.5 h-3.5 text-teal-600" />
-                  <span>Xem bài thi được giao ({assignments.length})</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('scores')}
-                  className="px-3 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white font-bold rounded-xl text-xs border border-white/25 backdrop-blur-md shadow-md flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Award className="w-3.5 h-3.5 text-amber-300" />
-                  <span>Xem bảng điểm cá nhân ({totalCompleted})</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('notifications')}
-                  className="px-3 py-1.5 bg-slate-900/80 hover:bg-slate-900 text-white font-bold rounded-xl text-xs border border-white/25 backdrop-blur-md shadow-md flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Bell className="w-3.5 h-3.5 text-teal-300" />
-                  <span>Thông báo mới ({notifications.length})</span>
-                </button>
-              </div>
             </div>
           ) : (
             <div
