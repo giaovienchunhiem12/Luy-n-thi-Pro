@@ -37,6 +37,7 @@ import {
 } from 'lucide-react';
 import ExamResultsView from './ExamResultsView';
 import AssignExamConfigModal from './AssignExamConfigModal';
+import { isExamSessionExpired } from '../pages/ExamTest';
 
 export interface ExamSession {
   id: string;
@@ -420,12 +421,19 @@ export default function OnlineAssignment() {
   };
 
   // Lọc dữ liệu
+  const getEffectiveStatus = (s: ExamSession) => {
+    if (s.status === 'Đã huỷ') return 'Đã huỷ';
+    if (isExamSessionExpired(s)) return 'Đã kết thúc';
+    return s.status;
+  };
+
   const filteredSessions = sessions.filter((s) => {
+    const effectiveStatus = getEffectiveStatus(s);
     const matchesName =
       s.name.toLowerCase().includes(searchExamName.toLowerCase()) ||
       s.examTitle.toLowerCase().includes(searchExamName.toLowerCase());
     const matchesClass = filterClass === 'all' || s.className === filterClass;
-    const matchesStatus = filterStatus === 'all' || s.status === filterStatus;
+    const matchesStatus = filterStatus === 'all' || effectiveStatus === filterStatus;
     return matchesName && matchesClass && matchesStatus;
   });
 
@@ -680,7 +688,14 @@ export default function OnlineAssignment() {
 
                     {/* Cột 7: Trạng thái */}
                     <td className="py-3.5 px-4 text-xs text-gray-600">
-                      {session.status}
+                      {isExamSessionExpired(session) && session.status !== 'Đã huỷ' ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                          <Lock className="w-3 h-3 text-rose-600" />
+                          <span>Đã khóa (Hết hạn)</span>
+                        </span>
+                      ) : (
+                        session.status
+                      )}
                     </td>
                   </tr>
                 ))}

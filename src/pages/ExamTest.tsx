@@ -42,6 +42,73 @@ export interface ViolationLogItem {
   details: string;
 }
 
+export function parseExamDeadlineMs(rawVal?: any): number | null {
+  if (!rawVal) return null;
+  if (typeof rawVal === 'number' && !isNaN(rawVal)) return rawVal;
+  if (rawVal?.toDate && typeof rawVal.toDate === 'function') {
+    try {
+      const t = rawVal.toDate().getTime();
+      return isNaN(t) ? null : t;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof rawVal === 'string') {
+    const str = rawVal.trim();
+    if (!str) return null;
+    // Định dạng: "HH:mm:ss DD/MM/YYYY" hoặc "HH:mm DD/MM/YYYY"
+    const m1 = str.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?\s+(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (m1) {
+      const d = new Date(
+        Number(m1[6]),
+        Number(m1[5]) - 1,
+        Number(m1[4]),
+        Number(m1[1]),
+        Number(m1[2]),
+        Number(m1[3] || 0)
+      );
+      return isNaN(d.getTime()) ? null : d.getTime();
+    }
+    // Định dạng: "DD/MM/YYYY HH:mm:ss" hoặc "DD/MM/YYYY"
+    const m2 = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+    if (m2) {
+      const d = new Date(
+        Number(m2[3]),
+        Number(m2[2]) - 1,
+        Number(m2[1]),
+        m2[4] !== undefined ? Number(m2[4]) : 23,
+        m2[5] !== undefined ? Number(m2[5]) : 59,
+        m2[6] !== undefined ? Number(m2[6]) : 59
+      );
+      return isNaN(d.getTime()) ? null : d.getTime();
+    }
+    const parsed = new Date(str).getTime();
+    if (!isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+export function isExamSessionExpired(sessionObj?: any, nowMs: number = Date.now()): boolean {
+  if (!sessionObj) return false;
+  const st = (sessionObj.status || '').trim();
+  if (st === 'Đã kết thúc' || st === 'Đã huỷ' || st === 'Đã khóa') {
+    return true;
+  }
+  const candidates = [
+    sessionObj.endDateStr,
+    sessionObj.endDateIso,
+    sessionObj.endDate,
+    sessionObj.dueDate
+  ];
+  for (const c of candidates) {
+    const ms = parseExamDeadlineMs(c);
+    if (ms !== null) {
+      return nowMs >= ms;
+    }
+  }
+  return false;
+}
+
 export default function ExamTest() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const [searchParams] = useSearchParams();
@@ -92,6 +159,14 @@ export default function ExamTest() {
   const [showResetConfirmModal, setShowResetConfirmModal] = useState<boolean>(false);
   const [isSubmittingExam, setIsSubmittingExam] = useState<boolean>(false);
   const [showQuestionPalette, setShowQuestionPalette] = useState<boolean>(false);
+  const [currentNowMs, setCurrentNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setCurrentNowMs(Date.now());
+    }, 5000);
+    return () => clearInterval(id);
+  }, []);
 
   const scrollToQuestion = (elementId: string) => {
     const el = document.getElementById(elementId);
@@ -256,10 +331,15 @@ export default function ExamTest() {
     fetchSessionAndExam();
   }, [sessionId]);
 
-  // 2. Real-time Countdown Timer
+  // 2. Real-time Countdown Timer & Deadline Lock Check
   useEffect(() => {
     if (isJoined && !submitted && timeLeft > 0) {
       timerRef.current = setInterval(() => {
+        if (isExamSessionExpired(session || examData, Date.now())) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          handleAutoSubmit('Đã đến thời gian kết thúc đề thi! Hệ thống tự động khóa đề và nộp bài của bạn.');
+          return;
+        }
         setTimeLeft((prev) => {
           if (prev <= 1) {
             clearInterval(timerRef.current!);
@@ -274,7 +354,7 @@ export default function ExamTest() {
         if (timerRef.current) clearInterval(timerRef.current);
       };
     }
-  }, [isJoined, submitted, timeLeft]);
+  }, [isJoined, submitted, timeLeft, session, examData]);
 
   // =========================================================
   // 3. GIÁM SÁT VI PHẠM: CHUYỂN TAB & RỜI KHỎI MÀN HÌNH
@@ -435,6 +515,11 @@ export default function ExamTest() {
   // 5. Handle Join
   const handleJoinExam = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isExamSessionExpired(session || examData, Date.now())) {
+      setError('Đề thi đã đến hạn kết thúc và đã bị khóa. Bạn không thể vào làm bài.');
+      return;
+    }
+
     const finalName = selectedStudent
       ? studentList.find(s => s.id === selectedStudent)?.name || paramStudentName || ''
       : studentName.trim() || paramStudentName;
@@ -741,6 +826,10 @@ export default function ExamTest() {
   };
 
   const resetExam = () => {
+    if (isExamSessionExpired(session || examData, Date.now())) {
+      triggerToastWarning('Đề thi đã đến hạn kết thúc và đã bị khóa, không thể làm lại!');
+      return;
+    }
     setShowResetConfirmModal(true);
   };
 
@@ -842,17 +931,23 @@ export default function ExamTest() {
     '14:50:00 10/6/2026'
   );
 
+  const isExamLocked = isExamSessionExpired(session || examData, currentNowMs);
+
   // Screen 1: Join Screen
   if (!isJoined) {
     return (
       <div className="min-h-screen bg-linear-to-br from-teal-900 via-teal-800 to-emerald-950 flex items-center justify-center p-4 font-sans select-none">
         <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-7 md:p-8 border border-teal-100 space-y-5">
           <div className="text-center space-y-1.5">
-            <div className="w-14 h-14 bg-teal-50 text-teal-700 rounded-2xl flex items-center justify-center mx-auto border border-teal-100 shadow-xs">
-              <BookOpen className="w-7 h-7" />
+            <div className={`w-14 h-14 rounded-2xl flex items-center justify-center mx-auto border shadow-xs ${
+              isExamLocked
+                ? 'bg-rose-50 text-rose-600 border-rose-200'
+                : 'bg-teal-50 text-teal-700 border-teal-100'
+            }`}>
+              {isExamLocked ? <Lock className="w-7 h-7" /> : <BookOpen className="w-7 h-7" />}
             </div>
             <h1 className="text-xl font-bold text-gray-900 tracking-tight">
-              Phòng Thi Trực Tuyến
+              {isExamLocked ? 'Đề Thi Đã Khóa' : 'Phòng Thi Trực Tuyến'}
             </h1>
             <p className="text-xs text-gray-500 font-medium">
               Chuẩn cấu trúc Đề thi THPT Form 2025 (3 Phần)
@@ -921,9 +1016,17 @@ export default function ExamTest() {
                   <Clock className="w-3.5 h-3.5 text-rose-600 shrink-0" />
                   <span>Ngày kết thúc:</span>
                 </span>
-                <span className="font-bold font-mono text-rose-950 bg-rose-100/70 px-2 py-0.5 rounded border border-rose-200">
-                  {sessionEndDate}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold font-mono text-rose-950 bg-rose-100/70 px-2 py-0.5 rounded border border-rose-200">
+                    {sessionEndDate}
+                  </span>
+                  {isExamLocked && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-600 text-white shadow-2xs">
+                      <Lock className="w-2.5 h-2.5" />
+                      <span>Đã khóa</span>
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -962,12 +1065,13 @@ export default function ExamTest() {
                       <button
                         key={st.key || `${st.id}-${sIdx}`}
                         type="button"
+                        disabled={isExamLocked}
                         onClick={() => setSelectedStudent(st.id)}
                         className={`w-full text-left px-4 py-3 text-xs font-medium transition-colors ${
                           selectedStudent === st.id
                             ? 'bg-teal-600 text-white'
                             : 'hover:bg-teal-50 text-gray-700'
-                        }`}
+                        } ${isExamLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                       >
                         {st.name}
                       </button>
@@ -985,22 +1089,59 @@ export default function ExamTest() {
                 </label>
                 <input
                   type="text"
+                  disabled={isExamLocked}
                   value={studentName}
                   onChange={(e) => setStudentName(e.target.value)}
                   placeholder="Ví dụ: Nguyễn Văn An"
-                  className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-xs font-medium text-gray-900 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-xs font-medium text-gray-900 focus:outline-none focus:ring-2 focus:ring-teal-500 disabled:opacity-60 disabled:cursor-not-allowed"
                   required
                 />
               </div>
             )}
 
-            <button
-              type="submit"
-              className="w-full py-3 bg-teal-700 hover:bg-teal-800 text-white font-bold rounded-xl text-xs shadow-md shadow-teal-700/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98"
-            >
-              <span>Tôi đã hiểu quy chế - Vào làm bài thi</span>
-              <ChevronRight className="w-4 h-4" />
-            </button>
+            {isExamLocked ? (
+              <div className="space-y-3">
+                <div className="p-3.5 bg-rose-50 border-2 border-rose-300 rounded-2xl text-xs text-rose-900 flex items-start gap-2.5">
+                  <Lock className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <div className="font-bold text-rose-800">ĐỀ THI ĐÃ KHÓA (ĐẾN HẠN KẾT THÚC)</div>
+                    <div className="text-[11px] text-rose-700 leading-relaxed">
+                      Đã qua thời gian kết thúc làm bài ({sessionEndDate}). Đề thi đã tự động khóa, bạn không thể vào làm bài.
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled
+                  className="w-full py-3 bg-gray-200 text-gray-500 border border-gray-300 font-bold rounded-xl text-xs flex items-center justify-center gap-2 cursor-not-allowed"
+                >
+                  <Lock className="w-4 h-4 text-rose-600" />
+                  <span>Đề thi đã khóa (Quá hạn kết thúc)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigate(
+                      paramStudentId || selectedStudent
+                        ? `/student-dashboard?studentId=${encodeURIComponent(paramStudentId || selectedStudent)}`
+                        : '/student-dashboard'
+                    )
+                  }
+                  className="w-full py-2.5 bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 font-bold rounded-xl text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                  <span>Quay lại Cổng Học Sinh</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                type="submit"
+                className="w-full py-3 bg-teal-700 hover:bg-teal-800 text-white font-bold rounded-xl text-xs shadow-md shadow-teal-700/20 transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-98"
+              >
+                <span>Tôi đã hiểu quy chế - Vào làm bài thi</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
           </form>
         </div>
       </div>
